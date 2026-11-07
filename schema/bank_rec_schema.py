@@ -106,7 +106,7 @@ class BankStatement(SchemaBase):
     def _clean_currency_fields(cls, v: Any) -> float:
         """Coerces empty strings or None to 0.0 before float validation."""
         if v in (None, ""):
-            return 0,0
+            return 0.0
         return float(v)
 
     @field_validator("balance", mode="before")

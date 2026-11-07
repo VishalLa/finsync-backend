@@ -38,7 +38,7 @@ class _AmountIndex:
     """Sorted (amount, idx) list. between(lo, hi) -> idx list via binary search.
         It only *prunes*; callers still re-apply the original exact predicate."""
     
-    __slots__ = ("keys", "_ids")
+    __slots__ = ("_keys", "_ids")
     def __init__(self, pairs) -> None:
         pairs = sorted(pairs)
         self._keys = [p[0] for p in pairs]

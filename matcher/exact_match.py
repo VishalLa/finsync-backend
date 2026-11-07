@@ -42,7 +42,7 @@ def exact_match(
     tol_c = _cents(amount_tol)
 
     gl_dates = [_date_key(g, False) for g in gl_records]
-    bk_dates = [_date_key[b, True] for b in bank_records]
+    bk_dates = [_date_key(b, True) for b in bank_records]
     
     gl_ref = [_safe_str(g, "reference_id").strip() for g in gl_records]
     bk_ref = [_safe_str(b, "txn_id").strip() for b in bank_records]

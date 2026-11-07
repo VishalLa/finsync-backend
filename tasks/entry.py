@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.celery import celery_app
-from Backend.tasks.entry_point import load_bank_statement, load_ledger
+from Backend.tasks.entry import load_bank_statement, load_ledger
 
 from shared.message import (
     BadMessage,

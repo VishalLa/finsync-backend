@@ -97,7 +97,19 @@ def _set_col_widths(ws, widths: list) -> None:
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
+def _attr(item, name: str, default=""):
+    """Read a field from a pydantic object or a plain dict (e.g. after a JSON round trip)."""
+    value = item.get(name, default) if isinstance(item, dict) else getattr(item, name, default)
+    return default if value is None else value
+
+def _as_ledger(rec) -> LedgerFormat:
+    return LedgerFormat.model_validate(rec) if isinstance(rec, dict) else rec
+
+def _as_bank(rec) -> BankStatement:
+    return BankStatement.model_validate(rec) if isinstance(rec, dict) else rec
+
 def _ledger_row(rec: LedgerFormat) -> tuple:
+    rec = _as_ledger(rec)
     amount    = rec.debit_amount or rec.credit_amount
     direction = "Debit" if rec.debit_amount > 0 else "Credit"
     return (
@@ -113,6 +125,7 @@ def _ledger_row(rec: LedgerFormat) -> tuple:
     )
 
 def _bank_row(rec: BankStatement) -> tuple:
+    rec = _as_bank(rec)
     amount    = rec.debit_amount or rec.credit_amount
     direction = "Debit" if rec.debit_amount > 0 else "Credit"
     return (
@@ -529,12 +542,12 @@ def _write_audit_investigation(wb, items: list) -> None:
         bg = C_ORANGE_BG if i % 2 == 0 else C_RED_BG
         ws.row_dimensions[r].height = 20
         _cell(ws, r, 1, i,                                          align="center", size=8, bg=bg, border=_border())
-        _cell(ws, r, 2, str(getattr(item, "bank_row_index", "")),   align="center", bg=bg, border=_border())
-        _cell(ws, r, 3, getattr(item, "narration", ""),             size=8, wrap=True, bg=bg, border=_border())
-        _cell(ws, r, 4, getattr(item, "amount", None),              align="right", num_fmt=INR, bg=bg, border=_border())
-        _cell(ws, r, 5, getattr(item, "direction", "").capitalize(),align="center", bg=bg, border=_border())
-        _cell(ws, r, 6, getattr(item, "flag_reason", ""),           size=8, wrap=True, bg=bg, border=_border())
-        _cell(ws, r, 7, getattr(item, "action_required", ""),       size=8, italic=True, wrap=True, bg=bg, border=_border())
+        _cell(ws, r, 2, str(_attr(item, "bank_row_index", "")),   align="center", bg=bg, border=_border())
+        _cell(ws, r, 3, _attr(item, "narration", ""),             size=8, wrap=True, bg=bg, border=_border())
+        _cell(ws, r, 4, _attr(item, "amount", None),              align="right", num_fmt=INR, bg=bg, border=_border())
+        _cell(ws, r, 5, str(_attr(item, "direction", "")).capitalize(),align="center", bg=bg, border=_border())
+        _cell(ws, r, 6, _attr(item, "flag_reason", ""),           size=8, wrap=True, bg=bg, border=_border())
+        _cell(ws, r, 7, _attr(item, "action_required", ""),       size=8, italic=True, wrap=True, bg=bg, border=_border())
         r += 1
 
 def _write_ignored_metadata(wb, items: list) -> None:
@@ -555,10 +568,10 @@ def _write_ignored_metadata(wb, items: list) -> None:
         bg = C_GREY_BG if i % 2 == 0 else None
         ws.row_dimensions[r].height = 18
         _cell(ws, r, 1, i,                                       align="center", size=8, bg=bg, border=_border())
-        _cell(ws, r, 2, getattr(item, "source", "").capitalize(),align="center", bg=bg, border=_border())
-        _cell(ws, r, 3, str(getattr(item, "row_ref", "")),       align="center", bg=bg, border=_border())
-        _cell(ws, r, 4, getattr(item, "narration", ""),          size=8, bg=bg, border=_border())
-        _cell(ws, r, 5, getattr(item, "reason", ""),             size=8, italic=True, wrap=True, bg=bg, border=_border())
+        _cell(ws, r, 2, str(_attr(item, "source", "")).capitalize(),align="center", bg=bg, border=_border())
+        _cell(ws, r, 3, str(_attr(item, "row_ref", "")),       align="center", bg=bg, border=_border())
+        _cell(ws, r, 4, _attr(item, "narration", ""),          size=8, bg=bg, border=_border())
+        _cell(ws, r, 5, _attr(item, "reason", ""),             size=8, italic=True, wrap=True, bg=bg, border=_border())
         r += 1
 
 def _write_unreconciled(wb, unreconciled: dict) -> None:

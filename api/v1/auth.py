@@ -12,7 +12,9 @@ from flask_jwt_extended import (
     get_jwt
 )
 
-from service import EmailService, UserService, _log_call
+from service.email_service import EmailService
+from service.helper import _log_call
+from service.user_service import UserService
 
 app = Blueprint("auth", __name__)
 
@@ -182,4 +184,3 @@ def delete_user():
     )
 
     return jsonify(result), 200 if result["ok"] else 404
-

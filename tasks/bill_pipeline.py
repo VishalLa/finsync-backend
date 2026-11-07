@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional, Any, Dict
 
 from app.celery import celery_app
-from service import RunBill
+from service.run_pipelines import RunBill
 
 
 _run_bill: Optional[RunBill] = None

@@ -11,7 +11,8 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
 from app.celery import celery_app
-from service import RunBill, _log_call
+from service.helper import _log_call
+from service.run_pipelines import RunBill
 from tasks.bill_pipeline import generate_gstr1, process_bill
 from tasks.full_run import run_full_pipeline
 

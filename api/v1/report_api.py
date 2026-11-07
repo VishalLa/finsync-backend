@@ -15,7 +15,7 @@ from tasks.generate_report_tasks import (
     generate_tds_reprot as generate_tds_task,
 )
 from app.celery import celery_app
-from service import _log_call
+from service.helper import _log_call
 
 
 app = Blueprint("reports", __name__)

@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from service import (
-    Base,
-    ResultBankRec,
-    PushBankRecData
-)
+from service._base import Base
+from service.bank_rec_service.run_result_service_bank_rec import ResultBankRec
+from service.bank_rec_service.store_bank_rec_data import PushBankRecData
 from shared.status import set_status
 
 

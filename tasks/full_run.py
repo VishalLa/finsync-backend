@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.celery import celery_app
-from service import FullRun
+from service.run_pipelines import FullRun
 
 
 _full_run: Optional[FullRun] = None

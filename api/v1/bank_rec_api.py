@@ -9,7 +9,10 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
 from app.celery import celery_app
-from service import ResultBankRec, RunBankRec, RecJournalPosting, _log_call
+from service.bank_rec_service.run_result_service_bank_rec import ResultBankRec
+from service.helper import _log_call
+from service.ledger_service.rec_journal_posting import RecJournalPosting
+from service.run_pipelines import RunBankRec
 from tasks.generate_report_tasks import generate_report_bank_rec
 
 from shared.message import EntryProcessMsg, T_ENTRY_PROCESS

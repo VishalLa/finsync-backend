@@ -7,7 +7,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 
 from schema import BankStatement, LedgerFormat, AIWindowOutput, AIManyToOneOutput
-from core.config import  Config
+from shared.settings import Settings
 from .ai_utils import (
     get_shared_llm,
     reset_shared_llm,
@@ -39,7 +39,7 @@ class AIMatcher:
 
     def __init__(
         self,
-        config: Config,
+        config: Settings,
         llm: Optional[ChatOllama] = None,
         tol: float = 0.50,
         same_side: bool = True,
@@ -374,7 +374,7 @@ class AIMatcher:
 
 
 def ai_matcher(
-    config: Config,
+    config: Settings,
     result: Dict[str, Any],
     tol: float = 0.50,
     same_side: bool = True,
@@ -382,4 +382,3 @@ def ai_matcher(
 ) -> Dict[str, Any]:
     matcher = AIMatcher(llm=llm, tol=tol, same_side=same_side, config=config)
     return matcher.run(result)
-

@@ -9,16 +9,15 @@ from pydantic import BaseModel
 from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import JsonOutputParser
 
-from core.config import Config
+from shared.settings import Settings
 from schema import LedgerFormat, BankStatement
-from core.config import Config
 
 MAX_CANDIDATES: int = 12
 
 # Shared LLM instance
 _SHARED_LLM: Optional[ChatOllama] = None
 
-def _prepare_llm(config: Config) -> Optional[ChatOllama]:
+def _prepare_llm(config: Settings) -> Optional[ChatOllama]:
     try:
         return ChatOllama(
             model=config.OLLAMA_NAME,
@@ -31,7 +30,7 @@ def _prepare_llm(config: Config) -> Optional[ChatOllama]:
         print(f"Error while creating instance of ChatOllama: {e}")
         return None
 
-def get_shared_llm(config: Config) -> ChatOllama:
+def get_shared_llm(config: Settings) -> ChatOllama:
     global _SHARED_LLM
     if _SHARED_LLM is None:
         _SHARED_LLM = _prepare_llm(config=config)

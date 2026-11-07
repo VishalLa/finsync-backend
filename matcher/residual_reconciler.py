@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from core.config import Config
+from shared.settings import Settings
 from schema import BankStatement, LedgerFormat, DraftAccountSuggestion
 
 from .helper import (
@@ -427,6 +427,7 @@ def _heuristic_draft_fallback(narration: str) -> DraftAccountSuggestion:
 
 def _generate_journal_drafts(
     missing_bank: List[Dict[str, Any]],
+    config: Settings,
     llm=None,
 ) -> Tuple[List[dict], List[Dict[str, Any]], bool, Optional[str]]:
 
@@ -435,7 +436,7 @@ def _generate_journal_drafts(
 
     using_shared = llm is None
     if using_shared:
-        llm = get_shared_llm(config=Config.from_env())
+        llm = get_shared_llm(config=config)
 
     llm_available = True
     skip_reason: Optional[str] = None
@@ -578,6 +579,7 @@ def reconcile_residuals(
     unreconciled_ledger: List[LedgerFormat],
     unreconciled_bank: List[BankStatement],
     *,
+    config: Settings,
     same_side: bool = True,
     llm=None,
 ) -> dict:
@@ -612,7 +614,7 @@ def reconcile_residuals(
     non_missing_ledger_remaining = split_ledger_left
 
     drafts, missing_bank_unresolved, ai_skipped, ai_skip_reason = _generate_journal_drafts(
-        missing_bank_remaining, llm=llm
+        missing_bank_remaining, config=config, llm=llm
     )
 
     review_bank = non_missing_bank_remaining + missing_bank_unresolved

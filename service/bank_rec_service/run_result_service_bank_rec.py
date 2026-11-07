@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core.config import _default_storage_dir
 from database import (
     DatabaseManager,
     
@@ -23,6 +22,7 @@ from database import (
     AuditInvestigationItemModel,
     JournalEntryModel,
 )
+from shared.settings import _default_storage_dir
 from schema import (
     LedgerFormat as SchemaLedger,
     BankStatement as SchemaBank

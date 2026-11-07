@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -9,17 +11,16 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from functools import lru_cache
+from typing import Any
 
-import pandas as pd
-
-from core.config import Config
+from shared.settings import get_settings
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 @lru_cache(maxsize=1)
 def storage_dir() -> Path:
-    return Path(Config.from_env().STORAGE_DIR).resolve()
+    return Path(get_settings().STORAGE_DIR).resolve()
 
 
 def run_ref(run_id: str, *parts: str) -> str:
@@ -71,11 +72,13 @@ def save_stream(ref: str, fileobj) -> None:
 
 
 # parquet (intermediate tables)
-def write_parquet(ref: str, df: pd.DataFrame) -> None:
+def write_parquet(ref: str, df: Any) -> None:
     _atomic_write(ref, lambda tmp: df.to_parquet(tmp, index=False))
 
 
-def read_parquet(ref: str, columns=None) -> pd.DataFrame:
+def read_parquet(ref: str, columns=None) -> Any:
+    import pandas as pd
+
     return pd.read_parquet(resolve(ref), columns=columns)
 
 
@@ -116,13 +119,17 @@ def _as_dict(obj) -> dict:
     return dict(vars(obj))
 
 
-def records_to_df(records) -> pd.DataFrame:
+def records_to_df(records) -> Any:
     """List of LedgerFormat / BankStatement objects -> DataFrame (for write_parquet)."""
+    import pandas as pd
+
     return pd.DataFrame([_as_dict(r) for r in records])
 
 
-def df_to_records(df: pd.DataFrame, cls, date_columns=()):
+def df_to_records(df: Any, cls, date_columns=()):
     """DataFrame (from read_parquet) -> list of cls objects. Empty cells become None."""
+    import pandas as pd
+
     df = df.copy()
     for col in date_columns:
         if col in df.columns:

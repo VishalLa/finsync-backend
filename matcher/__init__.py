@@ -8,7 +8,7 @@ from .same_side_detect import detect_same_side
 from .memory_match import memory_matcher, MatchMemory
 from .residual_reconciler import reconcile_residuals
 
-from core.config import Config
+from shared.settings import Settings
 
 from langchain_ollama import ChatOllama
 
@@ -61,7 +61,7 @@ def _quality_summary(all_matches: list) -> dict:
 
 
 def reconcile(
-    config: Config,
+    config: Settings,
     ledger_result: dict,
     bank_result: dict,
     all_warnings: list,
@@ -154,6 +154,7 @@ def reconcile(
         residual_result = reconcile_residuals(
             unreconciled_ledger=final_unreconciled["ledger"],
             unreconciled_bank=final_unreconciled["bank"],
+            config=config,
             same_side=same_side,
             llm=llm,
         )

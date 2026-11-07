@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Optional, Dict, List, Any
 
-from .celery_app import celery_app
-from .run_pipelines import RunBankRec
+from ..celery_app import celery_app
+from ..run_pipelines import RunBankRec
 
 _run_bank_rec: Optional[RunBankRec] = None
 

@@ -12,7 +12,7 @@ import pytest
     [
         ("entry_point.tasks", False),
         ("matcher.tasks", False),
-        ("service.tasks", True),
+        ("service.task.tasks", True),
     ],
 )
 def test_task_modules_respect_import_boundaries(
@@ -128,7 +128,7 @@ def test_db_mark_failed_task_repeats_mark_status_idempotently(
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("OLLAMA_URL", "http://127.0.0.1:11434")
-    from service import tasks as db_tasks
+    from service.task import tasks as db_tasks
     from shared.message import DBMarkFailedMsg
 
     updates = []

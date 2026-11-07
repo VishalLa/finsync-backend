@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Optional, Any, Dict
 
-from .celery_app import celery_app
-from .run_pipelines import RunBill
+from ..celery_app import celery_app
+from ..run_pipelines import RunBill
 
 
 _run_bill: Optional[RunBill] = None

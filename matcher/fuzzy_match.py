@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any, Callable, List, Optional
+from bisect import bisect_left, bisect_right
+from functools import lru_cache, partial
+from typing import Any, Callable, List, Optional, Tuple, Set, Dict
 
 from schema import BankStatement, LedgerFormat, IgnoredMetadataRecord, AuditInvestigationItem
 from .helper import (
@@ -16,11 +18,36 @@ from .helper import (
     _amounts_equal,
     _days_between,
     _crosses_month_boundary,
+    _digit_multiset,
+    _to_date,
 
-    text_similarity,
+    text_similarity as _text_similarity,
     is_transposition,
 )
 
+text_similarity = lru_cache(maxsize=262_144)(_text_similarity)
+_EPS = 1e-9
+
+# An edge is one *candidate* match:
+#   (score, ledger_indices, bank_indices, builder)
+# `builder()` lazily returns (match_dict, optional_audit_item).
+Edge = Tuple[float, Tuple[int, ...], Tuple[int, ...], Callable[[], Tuple[dict, Any]]]
+
+
+class _AmountIndex:
+    """Sorted (amount, idx) list. between(lo, hi) -> idx list via binary search.
+        It only *prunes*; callers still re-apply the original exact predicate."""
+    
+    __slots__ = ("keys", "_ids")
+    def __init__(self, pairs) -> None:
+        pairs = sorted(pairs)
+        self._keys = [p[0] for p in pairs]
+        self._ids = [p[1] for p in pairs]
+    
+    def between(self, lo: float, hi: float) -> List[int]:
+        i = bisect_left(self._keys, lo - _EPS)
+        j = bisect_right(self._keys, hi + _EPS)
+        return self._ids[i:j]
 
 class FuzzyMatcher:
     MAX_COMBINATION_SIZE: int = 6   
@@ -150,336 +177,525 @@ class FuzzyMatcher:
                     )
                 )
 
+    _W_TEXT: float = 4.0   # narration / account-name similarity (0..1)
+    _W_DAY:  float = 0.15  # penalty per day of lag
+    _W_AMT:  float = 0.5   # penalty for amount difference, relative to tolerance
+    _W_REF:  float = 3.0   # bonus when reference_id == txn_id
+    _MAX_EDGES_PER_RECORD: int = 50   # safety valve for pathological duplicates
+    
+    def _dates(self, recs: List[Any], attr: str) -> list:
+        return[_to_date(_safe_str(r, attr)) for r in recs]
+    
+    
+    def _win(self, base: int, da, db) -> int:
+        """Date-object version of _effective_window (no re-parsing)."""
+        return base + self._CROSS_MONTH_BUFFER if (da.year, da.month) != (db.year, db.month) else base   
+    
+    def _time_score(
+        self,
+        sim: float,
+        days: int, 
+        amt_diff: float,
+        tol: float,
+        ref_eq: bool
+    ) -> float:
+        return (
+            self._W_TEXT * sim
+            - self._W_DAY * abs(days)
+            - self._W_AMT * (amt_diff / tol if tol > 0 else 0.0)
+            + (self._W_REF if ref_eq else 0.0)
+        )
+         
+    @staticmethod
+    def _ref_equal(gl: Any, bank: Any) -> bool:
+        rg, rb = _safe_str(gl, "reference_id"), _safe_str(bank, "txn_id")
+        return bool(rg and rb and rg == rb)
+    
+    def _extend_capped(
+        self, 
+        edges: List[Edge],
+        local: List[Edge]
+    ) -> None:
+        if len(local) > self._MAX_EDGES_PER_RECORD:
+            local.sort(key=lambda e: -e[0])
+            local = local[: self._MAX_EDGES_PER_RECORD]
+        edges.extend(local)
+        
+    @staticmethod
+    def _tie_key(
+        gi: Tuple[int, ...],
+        bi: Tuple[int, ...],
+        gls: list,
+        bks: list
+    ) -> tuple:
+        """Tie-break on the records' own ids, not on their position in the pool,
+        so equal-scoring candidates resolve the same way whatever the input order."""
+        return (
+            tuple(str(getattr(gls[i], "ledger_id", "")) for i in gi),
+            tuple(str(getattr(bks[j], "row_index", "")) for j in bi),
+        )
+        
+    def _select(
+        self,
+        edges: List[Edge],
+        used_gl: Set[int],
+        used_bk: Set[int], 
+        gls: list,
+        bks: list
+    ) -> list:
+        """Greedy by score; deterministic tie-break on record ids."""
+        edges.sort(key=lambda e: (-e[0], self._tie_key(
+            gi=e[1], bi=e[2], gls=gls, bks=bks
+        )))
+        accepted = []
+        for _score, gi, bi, build in edges:
+            if (
+                any(i in used_gl for i in gi) or 
+                any(j in  used_bk for j in bi)
+            ):
+                continue
+            used_gl.update(gi)
+            used_bk.update(bi)
+            accepted.append((gi, bi, build))
+        return accepted
+    
+    def _emit(
+        self,
+        accepted: list,
+        gls: list,
+        bks: list
+    ) -> None:
+        accepted.sort(key=lambda a: self._tie_key(
+            gi=a[0], bi=a[1], gls=gls, bks=bks
+        ))
+        for _gi, _bi, build in accepted:
+            match, audit = build()
+            self.fuzzy_matches.append(match)
+            
+            if audit is None:
+                self.audit_investigation_items.append(audit)     
+                
+    def _rebuild_pools(
+        self,
+        gls: list,
+        bks: list,
+        used_gl: Set[int],
+        used_bk: Set[int]
+    ) -> None:
+        self.ledger_pool = [g for i, g in enumerate(gls) if i not in used_gl]
+        self.bank_pool = [b for j, b in enumerate(bks) if j not in used_bk]
+        
+    def _assign(
+        self,
+        edges: List[Edge],
+        gls: list,
+        bks: list
+    ) -> None:
+        used_gl: Set[int] = set()
+        used_bk: Set[int] = set()
+        self._emit(
+            self._select(
+                edges=edges,
+                used_gl=used_gl,
+                used_bk=used_bk,
+                gls=gls,
+                bks=bks
+            ), 
+            gls=gls, bks=bks
+        )        
 
-    # Strategy 1 - Deposit in Transit
+    # Strategy 1 / 2 - Deposit in Transit  /  Outstanding Checks
+    def _build_timing(
+        self, gl, bank, amt, diff, adj_type, high_days, verb
+    ):
+        return ({
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  adj_type,
+            "confidence_score": "High" if diff <= high_days else "Medium",
+            "details": (
+                f"Amount matches ({amt:.2f}); "
+                f"{verb} {diff} day(s) after ledger date."
+            ),
+        }, None)
+        
+        
+    def _match_timing(
+        self, *, gl_amt_of, bank_amt_of, base_window: int, adj_type: str, high_days: int, verb: str
+        ) -> None:
+            gls, bks = list(self.ledger_pool), list(self.bank_pool)
+            gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+            tol = self._tol_timing
+            index = _AmountIndex(
+                (bank_amt_of(b), j) 
+                for j, b in enumerate(bks) 
+                if bank_amt_of(b) > 0 and bk_dt[j]
+            )
+            
+            edges: List[Edge] = []
+            for i, gl in enumerate(gls):
+                g_amt = gl_amt_of(gl)
+                if g_amt <= 0 or gl_dt[i] is None:
+                    continue
+                
+                local: List[Edge] = []
+                for j in index.between(g_amt - tol, g_amt + tol):
+                    bank = bks[j]
+                    b_amt = bank_amt_of(bank)
+                    
+                    if not _amounts_equal(g_amt, b_amt, tol):
+                        continue
+                    
+                    diff = (bk_dt[j] - gl_dt[i]).days
+                    if not (1 <= diff <= self._win(base_window, gl_dt[i], bk_dt[j])):
+                        continue
+                    
+                    sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
+                    score = self._time_score(sim, diff, abs(g_amt - b_amt), tol, self._ref_equal(gl, bank))
+                    local.append((
+                        score, (i,), (j,), 
+                        partial(
+                            self._build_timing, gl, bank, g_amt, diff, adj_type, high_days, verb
+                        )
+                    ))
+                self._extend_capped(edges=edges, local=local)
+            self._assign(edges=edges, gls=gls, bks=bks)
+            
     def match_deposit_in_transit(self) -> None:
-        base_window = 5
-        for gl in list(self.ledger_pool):
-            if self.gl_in(gl) <= 0 or not _safe_str(gl, "transaction_date"):
-                continue
-            candidates = [
-                (diff, bank)
-                for bank in self.bank_pool
-                if self.bank_in(bank) > 0
-                and _safe_str(bank, "date")
-                and _amounts_equal(self.gl_in(gl), self.bank_in(bank), self._tol_timing)
-                and (diff := _days_between(
-                    _safe_str(gl, "transaction_date"),
-                    _safe_str(bank, "date"),
-                )) is not None
-                and 1 <= diff <= self._effective_window(
-                    base_window,
-                    _safe_str(gl, "transaction_date"),
-                    _safe_str(bank, "date"),
-                )
-            ]
-            if candidates:
-                diff, bank = min(candidates, key=lambda c: c[0])
-                self.fuzzy_matches.append({
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  "Deposit in Transit",
-                    "confidence_score": "High" if diff <= 3 else "Medium",
-                    "details": (
-                        f"Amount matches ({self.gl_in(gl):.2f}); "
-                        f"bank cleared {diff} day(s) after ledger date."
-                    ),
-                })
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
+        self._match_timing(
+            gl_amt_of=self.gl_in, 
+            bank_amt_of=self.bank_in, 
+            base_window=5,
+            adj_type="Deposit in Transit", 
+            high_days=3, 
+            verb="bank cleared",
+        )
 
-
-    # Strategy 2 - Outstanding Checks
     def match_outstanding_checks(self) -> None:
-        base_window = 14
-        for gl in list(self.ledger_pool):
-            if self.gl_out(gl) <= 0 or not _safe_str(gl, "transaction_date"):
-                continue
-            candidates = [
-                (diff, bank)
-                for bank in self.bank_pool
-                if self.bank_out(bank) > 0
-                and _safe_str(bank, "date")
-                and _amounts_equal(self.gl_out(gl), self.bank_out(bank), self._tol_timing)
-                and (diff := _days_between(
-                    _safe_str(gl, "transaction_date"),
-                    _safe_str(bank, "date"),
-                )) is not None
-                and 1 <= diff <= self._effective_window(
-                    base_window,
-                    _safe_str(gl, "transaction_date"),
-                    _safe_str(bank, "date"),
-                )
-            ]
-            if candidates:
-                diff, bank = min(candidates, key=lambda c: c[0])
-                self.fuzzy_matches.append({
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  "Outstanding Check",
-                    "confidence_score": "High" if diff <= 7 else "Medium",
-                    "details": (
-                        f"Amount matches ({self.gl_out(gl):.2f}); "
-                        f"payment cleared {diff} day(s) after ledger date."
-                    ),
-                })
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
-
+        self._match_timing(
+            gl_amt_of=self.gl_out, 
+            bank_amt_of=self.bank_out, 
+            base_window=14,
+            adj_type="Outstanding Check", 
+            high_days=7, 
+            verb="payment cleared",
+        )
+                        
 
     # Strategy 3 - Bank Service Charges
+    def _build_service_charge(
+        self, gl, bank, diff, fee, sim
+    ):
+        confidence = "High" if sim >= 0.5 else ("Medium" if sim >= 0.25 else "Low")
+        match_data = {
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  "Bank Service Charge",
+            "confidence_score": confidence,
+            "details": (
+                f"Bank debit ({self.bank_out(bank):.2f}) exceeds ledger "
+                f"({self.gl_out(gl):.2f}) by {fee:.2f} - embedded fee; "
+                f"narration similarity={sim:.2f}; dates {diff} day(s) apart."
+            ),
+        }
+        if confidence == "Low":
+            match_data["adjustment_type"] = "AI Agent Review (Possible Service Charge)"
+        return match_data, None
+    
     def match_bank_service_charges(self) -> None:
-        for gl in list(self.ledger_pool):
-            if self.gl_out(gl) <= 0 or not _safe_str(gl, "transaction_date"):
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+        index = _AmountIndex(
+            (self.bank_out(b), j) for j, b in enumerate(bks) if self.bank_out(b) > 0 and bk_dt[j]
+        )
+        _MAX_PLAUSIBLE_FEE = 2500.0
+
+        edges: List[Edge] = []
+        for i, gl in enumerate(gls):
+            g = self.gl_out(gl)
+            if g <= 0 or gl_dt[i] is None:
                 continue
-
-            best = None
-            for bank in self.bank_pool:
-                if self.bank_out(bank) <= 0 or not _safe_str(bank, "date"):
+            local: List[Edge] = []
+            # fee must be > 0 and (fee <= 2500 or fee <= 15% of the ledger amount)
+            for j in index.between(g, g + max(_MAX_PLAUSIBLE_FEE, 0.15 * g)):
+                bank = bks[j]
+                
+                diff = (bk_dt[j] - gl_dt[i]).days
+                if abs(diff) > self._win(3, gl_dt[i], bk_dt[j]):
                     continue
-
-                diff = _days_between(
-                    _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                window = self._effective_window(
-                    3, _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                if diff is None or abs(diff) > window:
-                    continue
-
-                fee = self.bank_out(bank) - self.gl_out(gl)
+                
+                fee = self.bank_out(bank) - g
                 if fee <= 0:
                     continue
-
-                fee_pct = fee / self.gl_out(gl) if self.gl_out(gl) else 0
-                _MAX_PLAUSIBLE_FEE = 2500.0
+                
+                fee_pct = fee / g if g else 0
                 if fee > _MAX_PLAUSIBLE_FEE and fee_pct > 0.15:
                     continue
-
-                sim = text_similarity(
-                    _safe_str(gl, "account_name"), _safe_str(bank, "narration")
-                )
+                
+                sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
                 if sim < 0.15:
                     continue
-
-                score = sim - abs(diff) * 0.01
-                if best is None or score > best[0]:
-                    best = (score, bank, diff, fee, sim)
-
-            if best:
-                _, bank, diff, fee, sim = best
-                confidence = "High" if sim >= 0.5 else ("Medium" if sim >= 0.25 else "Low")
-                match_data: dict = {
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  "Bank Service Charge",
-                    "confidence_score": confidence,
-                    "details": (
-                        f"Bank debit ({self.bank_out(bank):.2f}) exceeds ledger "
-                        f"({self.gl_out(gl):.2f}) by {fee:.2f} - embedded fee; "
-                        f"narration similarity={sim:.2f}; dates {diff} day(s) apart."
-                    ),
-                }
-                if confidence == "Low":
-                    match_data["adjustment_type"] = "AI Agent Review (Possible Service Charge)"
-                self.fuzzy_matches.append(match_data)
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
+                
+                local.append((
+                    sim - abs(diff) * 0.01, (i,), (j,), 
+                    partial(
+                        self._build_service_charge, gl, bank, diff, fee, sim
+                    )
+                ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
 
 
     # Strategy 4 - Text Similarity Match
+    def _build_text_match(
+        self, gl, bank, gl_amt, sim
+    ):
+        confidence = "High" if sim >= 0.6 else ("Medium" if sim >= 0.3 else "Low")
+        match_data = {
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  "Text Similarity Match",
+            "confidence_score": confidence,
+            "details": (
+                f"Amount matches ({gl_amt:.2f}); reference absent on ≥1 side; "
+                f"account/narration similarity={sim:.2f}."
+            ),
+        }
+        if confidence == "Low":
+            match_data["adjustment_type"] = "AI Agent Review (Text Similarity)"
+        return match_data, None
+
     def match_text_similarity(self) -> None:
-        for gl in list(self.ledger_pool):
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        out_idx = _AmountIndex(
+            (self.bank_out(b), j) 
+            for j, b in enumerate(bks) 
+            if self.bank_out(b) > 0
+        )
+        in_idx = _AmountIndex(
+            (self.bank_in(b), j) 
+            for j, b in enumerate(bks) 
+            if self.bank_in(b) > 0
+        )
+
+        edges: List[Edge] = []
+        for i, gl in enumerate(gls):
             is_out = self.gl_out(gl) > 0
             gl_amt = self.gl_out(gl) if is_out else self.gl_in(gl)
             if gl_amt <= 0:
                 continue
-
-            best = None
-            for bank in self.bank_pool:
+            
+            idx = out_idx if is_out else in_idx
+            local: List[Edge] = []
+            
+            for j in idx.between(gl_amt - self._tol, gl_amt + self._tol):
+                bank = bks[j]
                 b_amt = self.bank_out(bank) if is_out else self.bank_in(bank)
                 if b_amt <= 0 or not _amounts_equal(gl_amt, b_amt, self._tol):
                     continue
-
-                ref_gl = _safe_str(gl,   "reference_id")
-                ref_bk = _safe_str(bank, "txn_id")
+                
+                ref_gl, ref_bk = _safe_str(gl, "reference_id"), _safe_str(bank, "txn_id")
                 if ref_gl and ref_bk and ref_gl != ref_bk:
                     continue
-
-                sim = text_similarity(
-                    _safe_str(gl, "account_name"), _safe_str(bank, "narration")
-                )
+                
+                sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
                 if sim < 0.3:
                     continue
-
-                if best is None or sim > best[0]:
-                    best = (sim, bank)
-
-            if best:
-                sim, bank = best
-                confidence = "High" if sim >= 0.6 else ("Medium" if sim >= 0.3 else "Low")
-                match_data: dict = {
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  "Text Similarity Match",
-                    "confidence_score": confidence,
-                    "details": (
-                        f"Amount matches ({gl_amt:.2f}); reference absent on ≥1 side; "
-                        f"account/narration similarity={sim:.2f}."
-                    ),
-                }
-                if confidence == "Low":
-                    match_data["adjustment_type"] = "AI Agent Review (Text Similarity)"
-                self.fuzzy_matches.append(match_data)
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
+                
+                score = sim + (1.0 if ref_gl and ref_gl == ref_bk else 0.0) - 0.001 * abs(gl_amt - b_amt)
+                local.append((
+                    score, (i,), (j,), partial(
+                        self._build_text_match, gl, bank, gl_amt, sim
+                    )
+                ))
+                
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
 
 
     # Strategy 5 - Book Error (Transposition)
+    def _build_transposition(
+        self, gl, bank, gl_amt, b_amt, diff, sim
+    ):
+        confidence = "High" if (sim >= 0.5 and diff == 0) else "Medium"
+        return ({
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  "Book Error (Transposition)",
+            "confidence_score": confidence,
+            "details": (
+                f"Ledger: {gl_amt:.2f}, Bank: {b_amt:.2f} - same digits, "
+                f"different order; narration similarity={sim:.2f}; "
+                f"dates {diff} day(s) apart. Recommend journal entry correction."
+            ),
+        }, None)
+
     def match_transposition_errors(self) -> None:
-        for gl in list(self.ledger_pool):
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+
+        # Same digits => same digit multiset: bucket banks by (direction, multiset).
+        buckets: Dict[Tuple[bool, str], List[int]] = {}
+        for j, b in enumerate(bks):
+            if bk_dt[j] is None:
+                continue
+            
+            for is_out, amt in ((True, self.bank_out(b)), (False, self.bank_in(b))):
+                if amt > 0:
+                    buckets.setdefault((is_out, _digit_multiset(amt)), []).append(j)
+
+        edges: List[Edge] = []
+        for i, gl in enumerate(gls):
             is_out = self.gl_out(gl) > 0
             gl_amt = self.gl_out(gl) if is_out else self.gl_in(gl)
-            if gl_amt <= 0 or not _safe_str(gl, "transaction_date"):
+            if gl_amt <= 0 or gl_dt[i] is None:
                 continue
-
-            best = None
-            for bank in self.bank_pool:
+            
+            local: List[Edge] = []
+            for j in buckets.get((is_out, _digit_multiset(gl_amt)), []):
+                bank = bks[j]
                 b_amt = self.bank_out(bank) if is_out else self.bank_in(bank)
-                if b_amt <= 0 or not _safe_str(bank, "date"):
+                if b_amt <= 0 or not is_transposition(gl_amt, b_amt, self._tol_transpos):
                     continue
-
-                # use self._tol_transpos (TRANSPOSITION key → 0.0)
-                if not is_transposition(gl_amt, b_amt, self._tol_transpos):
+                
+                diff = (bk_dt[j] - gl_dt[i]).days
+                if abs(diff) > self._win(3, gl_dt[i], bk_dt[j]):
                     continue
-
-                diff = _days_between(
-                    _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                window = self._effective_window(
-                    3, _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                if diff is None or abs(diff) > window:
-                    continue
-
-                sim = text_similarity(
-                    _safe_str(gl, "account_name"), _safe_str(bank, "narration")
-                )
+                
+                sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
                 if sim < 0.3:
                     continue
+                
+                local.append((
+                    sim - abs(diff) * 0.01, (i,), (j,), partial(
+                        self._build_transposition, gl, bank, gl_amt, b_amt, diff, sim
+                    )
+                ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
 
-                score = sim - abs(diff) * 0.01
-                if best is None or score > best[0]:
-                    best = (score, bank, diff, sim, b_amt)
-
-            if best:
-                _, bank, diff, sim, b_amt = best
-                confidence = "High" if (sim >= 0.5 and diff == 0) else "Medium"
-                self.fuzzy_matches.append({
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  "Book Error (Transposition)",
-                    "confidence_score": confidence,
-                    "details": (
-                        f"Ledger: {gl_amt:.2f}, Bank: {b_amt:.2f} - same digits, "
-                        f"different order; narration similarity={sim:.2f}; "
-                        f"dates {diff} day(s) apart. Recommend journal entry correction."
-                    ),
-                })
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
 
 
     # Strategy 6 - Rounding Differences
+    def _build_rounding(
+        self, gl, bank, gl_amt, b_amt, diff_amt, sim
+    ):
+        return ({
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  "Rounding Difference",
+            "confidence_score": "High",
+            "details": (
+                f"Ledger ({gl_amt:.2f}) and Bank ({b_amt:.2f}) differ by "
+                f"{diff_amt:.2f}. Narration similarity={sim:.2f}. "
+                f"Recommend writing off difference."
+            ),
+        }, None)
+
     def match_rounding_differences(self) -> None:
-        for gl in list(self.ledger_pool):
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+        tol = self._tol_rounding
+        out_idx = _AmountIndex(
+            (self.bank_out(b), j) 
+            for j, b in enumerate(bks) 
+            if self.bank_out(b) > 0 and bk_dt[j]
+        )
+        in_idx = _AmountIndex(
+            (self.bank_in(b), j) 
+            for j, b in enumerate(bks) 
+            if self.bank_in(b) > 0 and bk_dt[j]
+        )
+
+        edges: List[Edge] = []
+        for i, gl in enumerate(gls):
             is_out = self.gl_out(gl) > 0
             gl_amt = self.gl_out(gl) if is_out else self.gl_in(gl)
-            if gl_amt <= 0 or not _safe_str(gl, "transaction_date"):
+            if gl_amt <= 0 or gl_dt[i] is None:
                 continue
-
-            best = None
-            for bank in self.bank_pool:
+            
+            idx = out_idx if is_out else in_idx
+            local: List[Edge] = []
+            for j in idx.between(gl_amt - tol, gl_amt + tol):
+                bank = bks[j]
                 b_amt = self.bank_out(bank) if is_out else self.bank_in(bank)
-                if b_amt <= 0 or not _safe_str(bank, "date"):
-                    continue
-
                 diff_amt = abs(gl_amt - b_amt)
-                if not (0.0 < diff_amt <= self._tol_rounding):
+                if b_amt <= 0 or not (0.0 < diff_amt <= tol):
                     continue
-
-                diff_days = _days_between(
-                    _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                window = self._effective_window(
-                    3, _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                if diff_days is None or abs(diff_days) > window:
+                
+                diff_days = (bk_dt[j] - gl_dt[i]).days
+                if abs(diff_days) > self._win(3, gl_dt[i], bk_dt[j]):
                     continue
-
-                sim = text_similarity(
-                    _safe_str(gl, "account_name"), _safe_str(bank, "narration")
-                )
+                
+                sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
                 if sim < 0.5:
                     continue
-
-                if best is None or sim > best[0]:
-                    best = (sim, bank, b_amt, diff_amt)
-
-            if best:
-                sim, bank, b_amt, diff_amt = best
-                self.fuzzy_matches.append({
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  "Rounding Difference",
-                    "confidence_score": "High",
-                    "details": (
-                        f"Ledger ({gl_amt:.2f}) and Bank ({b_amt:.2f}) differ by "
-                        f"{diff_amt:.2f}. Narration similarity={sim:.2f}. "
-                        f"Recommend writing off difference."
-                    ),
-                })
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
+                
+                local.append((
+                    sim - 0.001 * diff_amt, (i,), (j,), partial(
+                        self._build_rounding, gl, bank, gl_amt, b_amt, diff_amt, sim
+                    )
+                ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
 
 
     # Strategy 7 - NSF / Returned Items
+    def _build_nsf(
+        self, gl, bank, diff
+    ):
+        return ({
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  "NSF / Returned Item",
+            "confidence_score": "High",
+            "details": (
+                f"Bank narration indicates returned item "
+                f"('{_safe_str(bank, 'narration')}'); "
+                f"matches ledger receipt of {self.gl_in(gl):.2f} recorded "
+                f"{diff} day(s) earlier. Requires a reversing journal entry."
+            ),
+        }, None)
+
     def match_nsf_returned_items(self) -> None:
-        for bank in list(self.bank_pool):
-            if self.bank_out(bank) <= 0 or not _safe_str(bank, "date"):
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+        index = _AmountIndex(
+            (self.gl_in(g), i) 
+            for i, g in enumerate(gls)
+            if self.gl_in(g) > 0 and gl_dt[i]
+        )
+
+        edges: List[Edge] = []
+        for j, bank in enumerate(bks):
+            if self.bank_out(bank) <= 0 or bk_dt[j] is None:
                 continue
+            
             if not _NSF_RE.search(_safe_str(bank, "narration")):
                 continue
-
-            candidates = []
-            for gl in self.ledger_pool:
-                if self.gl_in(gl) <= 0 or not _safe_str(gl, "transaction_date"):
+            
+            b = self.bank_out(bank)
+            local: List[Edge] = []
+            for i in index.between(b - self._tol, b + self._tol):
+                gl = gls[i]
+                if not _amounts_equal(self.gl_in(gl), b, self._tol):
                     continue
-                if not _amounts_equal(self.gl_in(gl), self.bank_out(bank), self._tol):
+                
+                diff = (bk_dt[j] - gl_dt[i]).days
+                if diff < 0:
                     continue
-                diff = _days_between(
-                    _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
+                
+                sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
+                score = self._time_score(
+                    sim, diff, abs(self.gl_in(gl) - b), self._tol, self._ref_equal(gl, bank)
                 )
-                if diff is None or diff < 0:
-                    continue
-                candidates.append((diff, gl))
-
-            if candidates:
-                diff, gl = min(candidates, key=lambda c: c[0])
-                self.fuzzy_matches.append({
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  "NSF / Returned Item",
-                    "confidence_score": "High",
-                    "details": (
-                        f"Bank narration indicates returned item "
-                        f"('{_safe_str(bank, 'narration')}'); "
-                        f"matches ledger receipt of {self.gl_in(gl):.2f} recorded "
-                        f"{diff} day(s) earlier. Requires a reversing journal entry."
-                    ),
-                })
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
+                local.append((
+                    score, (i,), (j,), partial(
+                        self._build_nsf, gl, bank, diff
+                    )
+                ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
 
 
     # Strategy 8 - Interest Income (standalone bank credit)
@@ -504,471 +720,524 @@ class FuzzyMatcher:
 
 
     # Strategy 9 - Discounts and Tax Withholdings
+    _COMMON_DISCOUNT_RATES = (0.01, 0.02, 0.05, 0.075, 0.10, 0.20)
+
+    def _build_discount(
+        self, gl, bank, gl_amt, b_amt, implied
+    ):
+        implied_pct = implied * 100
+        pct_label = (
+            f"{implied_pct:.0f}%" if implied_pct == int(implied_pct) else f"{implied_pct:.1f}%"
+        )
+        return ({
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  f"Discount/Withholding ({pct_label})",
+            "confidence_score": "Medium",
+            "details": (
+                f"Bank received {b_amt:.2f}, {pct_label} less "
+                f"than Ledger ({gl_amt:.2f}). Likely early payment discount "
+                f"or tax withholding."
+            ),
+        }, None)
+
     def match_discounts_and_taxes(self) -> None:
-        COMMON_RATES = [0.01, 0.02, 0.05, 0.075, 0.10, 0.20]
-        for gl in list(self.ledger_pool):
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+        out_idx = _AmountIndex(
+            (self.bank_out(b), j) 
+            for j, b in enumerate(bks) 
+            if self.bank_out(b) > 0 and bk_dt[j]
+        )
+        in_idx = _AmountIndex(
+            (self.bank_in(b), j) 
+            for j, b in enumerate(bks) 
+            if self.bank_in(b) > 0 and bk_dt[j]
+        )
+
+        edges: List[Edge] = []
+        for i, gl in enumerate(gls):
             is_out = self.gl_out(gl) > 0
             gl_amt = self.gl_out(gl) if is_out else self.gl_in(gl)
-            if gl_amt <= 0 or not _safe_str(gl, "transaction_date"):
+            if gl_amt <= 0 or gl_dt[i] is None:
                 continue
+            
+            idx = out_idx if is_out else in_idx
+            local: List[Edge] = []
+            seen: Set[int] = set()
+            for rate in self._COMMON_DISCOUNT_RATES:
+                lo = gl_amt * (1 - rate - 0.001)
+                hi = gl_amt * (1 - rate + 0.001)
+                for j in idx.between(lo, hi):
+                    if j in seen:
+                        continue
+                    
+                    seen.add(j)
+                    bank = bks[j]
+                    b_amt = self.bank_out(bank) if is_out else self.bank_in(bank)
+                    if b_amt <= 0 or b_amt >= gl_amt:
+                        continue
+                    
+                    implied = (gl_amt - b_amt) / gl_amt
+                    if not any(abs(implied - r) < 0.001 for r in self._COMMON_DISCOUNT_RATES):
+                        continue
+                    
+                    diff = (bk_dt[j] - gl_dt[i]).days
+                    if abs(diff) > self._win(5, gl_dt[i], bk_dt[j]):
+                        continue
+                    
+                    sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
+                    if sim < 0.4:
+                        continue
+                    
+                    local.append((
+                        sim, (i,), (j,), partial(
+                            self._build_discount, gl, bank, gl_amt, b_amt, implied
+                        )
+                    ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
 
-            best = None
-            for bank in self.bank_pool:
-                b_amt = self.bank_out(bank) if is_out else self.bank_in(bank)
-                if b_amt <= 0 or not _safe_str(bank, "date") or b_amt >= gl_amt:
+
+    # Strategy 10 / 11 - Zero-sum contra pairs (bank side / ledger side)
+    def _zero_sum_edges(
+        self, recs, out_of, in_of, text_attr, date_attr, builder, side
+    ) -> List[Edge]:
+        dts = self._dates(recs, date_attr)
+        items = []                                   # (amount, idx, is_out)
+        for k, r in enumerate(recs):
+            o, n = out_of(r), in_of(r)
+            amt = o if o > 0 else n
+            if amt > 0:
+                items.append((amt, k, o > 0))
+                
+        amt_of = {k: a for a, k, _ in items}
+        in_idx = _AmountIndex(
+            (a, k) 
+            for a, k, is_out in items 
+            if not is_out
+        )
+
+        edges: List[Edge] = []
+        for a1, k1, is_out in items:
+            if not is_out:
+                continue                              # every opposite pair is seen once from its "out" half
+            
+            local: List[Edge] = []
+            for k2 in in_idx.between(a1 - self._tol, a1 + self._tol):
+                if not _amounts_equal(a1, amt_of[k2], self._tol):
                     continue
-
-                implied = (gl_amt - b_amt) / gl_amt
-                if not any(abs(implied - r) < 0.001 for r in COMMON_RATES):
+                
+                sim = text_similarity(_safe_str(recs[k1], text_attr), _safe_str(recs[k2], text_attr))
+                d1, d2 = dts[k1], dts[k2]
+                diff = abs((d2 - d1).days) if (d1 and d2) else 0
+                if not (sim >= 0.6 or (sim >= 0.3 and diff <= 90)):
                     continue
+                
+                lo, hi = (k1, k2) if k1 < k2 else (k2, k1)
+                score = sim - diff * 0.001
+                member = (lo, hi)
+                local.append((
+                    score,
+                    member if side == "ledger" else (),
+                    member if side == "bank" else (),
+                    partial(builder, recs[lo], recs[hi], a1, sim, diff),
+                ))
+                
+            self._extend_capped(edges, local)
+        return edges
 
-                diff = _days_between(
-                    _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                window = self._effective_window(
-                    5, _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-                if diff is None or abs(diff) > window:
-                    continue
+    def _build_bank_zero_sum(
+        self, b1, b2, amt, sim, diff
+    ):
+        reason = "Bank Error/Reversal" if sim >= 0.6 and diff <= 14 else "Temporary Advance/Refund"
+        return ({
+            "ledger_id":        None,
+            "bank_id":          f"{getattr(b1, 'row_index', '')} & {getattr(b2, 'row_index', '')}",
+            "adjustment_type":  f"Bank-Side Zero-Sum ({reason})",
+            "confidence_score": "High" if sim >= 0.7 else "Medium",
+            "details": (
+                f"Net-zero bank entries of {amt:.2f} cancel out. "
+                f"Spans {diff} day(s). Narration similarity={sim:.2f}."
+            ),
+        }, None)
 
-                sim = text_similarity(
-                    _safe_str(gl, "account_name"), _safe_str(bank, "narration")
-                )
-                if sim < 0.4:
-                    continue
+    def _build_ledger_zero_sum(
+        self, gl1, gl2, amt, sim, diff
+    ):
+        reason = "Ledger Reversal" if sim >= 0.6 and diff <= 14 else "Unbanked Advance/Refund"
+        return ({
+            "ledger_id":        f"{_safe_str(gl1, 'ledger_id')} & {_safe_str(gl2, 'ledger_id')}",
+            "bank_id":          None,
+            "adjustment_type":  f"Ledger-Side Zero-Sum ({reason})",
+            "confidence_score": "High" if sim >= 0.7 else "Medium",
+            "details": (
+                f"Net-zero ledger entries of {amt:.2f} cancel out. "
+                f"Spans {diff} day(s). Account name similarity={sim:.2f}."
+            ),
+        }, None)
 
-                if best is None or sim > best[0]:
-                    best = (sim, bank, b_amt, implied)
-
-            if best:
-                sim, bank, b_amt, implied = best
-                implied_pct = implied * 100
-                pct_label = (
-                    f"{implied_pct:.0f}%" if implied_pct == int(implied_pct)
-                    else f"{implied_pct:.1f}%"
-                )
-                self.fuzzy_matches.append({
-                    "ledger_id":        _safe_str(gl,   "ledger_id"),
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  f"Discount/Withholding ({pct_label})",
-                    "confidence_score": "Medium",
-                    "details": (
-                        f"Bank received {b_amt:.2f}, {pct_label} less "
-                        f"than Ledger ({gl_amt:.2f}). Likely early payment discount "
-                        f"or tax withholding."
-                    ),
-                })
-                self.ledger_pool.remove(gl)
-                self.bank_pool.remove(bank)
-
-
-    # Strategy 10 - Bank-Side Zero Sum (contra pair on bank statement)
     def match_bank_side_zero_sum(self) -> None:
-        used:    set         = set()
-        matched: List[tuple] = []
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        edges = self._zero_sum_edges(
+            bks, self.bank_out, self.bank_in, "narration", "date",
+            self._build_bank_zero_sum, "bank",
+        )
+        self._assign(edges, gls, bks)
 
-        for i, b1 in enumerate(self.bank_pool):
-            if i in used:
-                continue
-            b1_out, b1_in = self.bank_out(b1), self.bank_in(b1)
-            b1_amt    = b1_out if b1_out > 0 else b1_in
-            b1_is_out = b1_out > 0
-            if b1_amt <= 0:
-                continue
-
-            best = None
-            for j, b2 in enumerate(self.bank_pool):
-                if j <= i or j in used:
-                    continue
-                b2_is_out = self.bank_out(b2) > 0
-                if b1_is_out == b2_is_out:        # must be opposite directions
-                    continue
-                b2_amt = self.bank_out(b2) if b2_is_out else self.bank_in(b2)
-                if not _amounts_equal(b1_amt, b2_amt, self._tol):
-                    continue
-
-                sim  = text_similarity(
-                    _safe_str(b1, "narration"), _safe_str(b2, "narration")
-                )
-                diff = abs(_days_between(
-                    _safe_str(b1, "date"), _safe_str(b2, "date")
-                ) or 0)
-                if sim >= 0.6 or (sim >= 0.3 and diff <= 90):
-                    score = sim - diff * 0.001
-                    if best is None or score > best[0]:
-                        best = (score, j, b2, sim, diff)
-
-            if best:
-                _, j, b2, sim, diff = best
-                used.add(i)
-                used.add(j)
-                matched.append((b1, b2, sim, diff))
-
-        for b1, b2, sim, diff in matched:
-            b1_amt = self.bank_out(b1) if self.bank_out(b1) > 0 else self.bank_in(b1)
-            reason = (
-                "Bank Error/Reversal"
-                if sim >= 0.6 and diff <= 14
-                else "Temporary Advance/Refund"
-            )
-            self.fuzzy_matches.append({
-                "ledger_id":        None,
-                "bank_id":          (
-                    f"{getattr(b1, 'row_index', '')} & "
-                    f"{getattr(b2, 'row_index', '')}"
-                ),
-                "adjustment_type":  f"Bank-Side Zero-Sum ({reason})",
-                "confidence_score": "High" if sim >= 0.7 else "Medium",
-                "details": (
-                    f"Net-zero bank entries of {b1_amt:.2f} cancel out. "
-                    f"Spans {diff} day(s). Narration similarity={sim:.2f}."
-                ),
-            })
-            if b1 in self.bank_pool:
-                self.bank_pool.remove(b1)
-            if b2 in self.bank_pool:
-                self.bank_pool.remove(b2)
-
-
-    # Strategy 11 - Ledger-Side Zero Sum (contra pair in ledger)
     def match_ledger_side_zero_sum(self) -> None:
-        used:    set         = set()
-        matched: List[tuple] = []
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        edges = self._zero_sum_edges(
+            gls, self.gl_out, self.gl_in, "account_name", "transaction_date",
+            self._build_ledger_zero_sum, "ledger",
+        )
+        self._assign(edges, gls, bks)
 
-        for i, gl1 in enumerate(self.ledger_pool):
-            if i in used:
-                continue
-            gl1_out   = self.gl_out(gl1)
-            gl1_in    = self.gl_in(gl1)
-            gl1_amt   = gl1_out if gl1_out > 0 else gl1_in
-            gl1_is_out = gl1_out > 0
-            if gl1_amt <= 0:
-                continue
 
-            best = None
-            for j, gl2 in enumerate(self.ledger_pool):
-                if j <= i or j in used:
-                    continue
-                gl2_is_out = self.gl_out(gl2) > 0
-                if gl1_is_out == gl2_is_out:
-                    continue
-                gl2_amt = self.gl_out(gl2) if gl2_is_out else self.gl_in(gl2)
-                if not _amounts_equal(gl1_amt, gl2_amt, self._tol):
-                    continue
+    # Strategy 12 / 13 - Aggregations (1 ledger : N bank  /  N ledger : 1 bank)
+    def _combos_with_sum(
+        self, valid: List[tuple], target: float, r: int
+    ):
+        """Yield r-item combinations of `valid` (items are (record, amount)) whose amounts sum to
+        `target` within tolerance. Same combinations, same order and same left-to-right float
+        sums as filtering itertools.combinations(valid, r), but a branch is abandoned as soon as
+        its running total exceeds target + tol (all amounts are positive)."""
+        amts = [x[1] for x in valid]
+        n, tol = len(valid), self._tol
+        ceiling = target + tol + _EPS
+        chosen: List[int] = []
 
-                sim  = text_similarity(
-                    _safe_str(gl1, "account_name"), _safe_str(gl2, "account_name")
+        def rec(start: int, k: int, total: float):
+            if k == 0:
+                if _amounts_equal(target, total, tol):
+                    yield tuple(valid[i] for i in chosen)
+                return
+            
+            for i in range(start, n - k + 1):
+                t = total + amts[i]
+                if t > ceiling:
+                    continue
+                
+                chosen.append(i)
+                yield from rec(i + 1, k - 1, t)
+                
+                chosen.pop()
+
+        yield from rec(0, r, 0.0)
+
+    def _build_aggregated(
+        self, gl, banks, amts, gl_amt
+    ):
+        id_str = " & ".join(str(getattr(b, "row_index", "?")) for b in banks)
+        amt_str = " + ".join(f"{a:.2f}" for a in amts)
+        return ({
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          id_str,
+            "adjustment_type":  f"Aggregated Split Transaction ({len(banks)} items)",
+            "confidence_score": "High",
+            "details": (
+                f"Ledger ({gl_amt:.2f}) = sum of {len(banks)} bank entries ({amt_str})."
+            ),
+        }, None)
+
+    def _build_many_to_one(
+        self, gls_, bank, amts, b_amt
+    ):
+        id_str = " & ".join(_safe_str(g, "ledger_id") for g in gls_)
+        amt_str = " + ".join(f"{a:.2f}" for a in amts)
+        return ({
+            "ledger_id":        id_str,
+            "bank_id":          getattr(bank, "row_index", None),
+            "adjustment_type":  f"Many-to-One Aggregation ({len(gls_)} items)",
+            "confidence_score": "High",
+            "details": (
+                f"Bank ({b_amt:.2f}) = sum of {len(gls_)} ledger entries ({amt_str})."
+            ),
+        }, None)
+
+    def _match_combos(self, anchor_is_gl: bool) -> None:
+        base_window = 3
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+
+        anchors = gls if anchor_is_gl else bks
+        members = bks if anchor_is_gl else gls
+        a_dt = gl_dt if anchor_is_gl else bk_dt
+        m_dt = bk_dt if anchor_is_gl else gl_dt
+        
+        # (anchor amount fn, member amount fn) picked by the anchor's direction
+        a_out, a_in = (self.gl_out, self.gl_in) if anchor_is_gl else (self.bank_out, self.bank_in)
+        m_out, m_in = (self.bank_out, self.bank_in) if anchor_is_gl else (self.gl_out, self.gl_in)
+        
+        # text compared as in the original: S12 (gl name, narration); S13 passes counterpart=narration
+        a_text_attr = "account_name" if anchor_is_gl else "narration"
+        m_text_attr = "narration" if anchor_is_gl else "account_name"
+
+        m_order = sorted(
+            (m_dt[k].toordinal(), k) 
+            for k in range(len(members)) 
+            if m_dt[k] is not None
+        )
+        m_keys = [o for o, _ in m_order]
+        used_a: Set[int] = set()
+        used_m: Set[int] = set()
+        used_gl = used_a if anchor_is_gl else used_m
+        used_bk = used_m if anchor_is_gl else used_a
+
+        accepted_all: list = []
+        active: List[int] = [
+            k for k, r in enumerate(anchors) 
+            if a_dt[k] is not None
+        ]
+
+        while active:
+            edges: List[Edge] = []
+            has_edge: Set[int] = set()
+            maybe_more: Set[int] = set()
+
+            for a in active:
+                rec = anchors[a]
+                is_out = a_out(rec) > 0
+                a_amt = a_out(rec) if is_out else a_in(rec)
+                if a_amt <= 0:
+                    continue
+                
+                m_amt_of = m_out if is_out else m_in
+
+                valid, idx_of = [], {}
+                da = a_dt[a].toordinal()
+                reach = base_window + self._CROSS_MONTH_BUFFER          # widest window we can ever accept
+                lo, hi = (da, da + reach) if anchor_is_gl else (da - reach, da)
+                ks = sorted(m_order[q][1] for q in range(bisect_left(m_keys, lo), bisect_right(m_keys, hi)))
+                for k in ks:
+                    m = members[k]
+                    if k in used_m or m_dt[k] is None:
+                        continue
+                    
+                    amt = m_amt_of(m)
+                    if amt <= 0:
+                        continue
+                    
+                    # diff is always bank_date - ledger_date (as in the original)
+                    diff = (m_dt[k] - a_dt[a]).days if anchor_is_gl else (a_dt[a] - m_dt[k]).days
+                    d_gl, d_bk = (a_dt[a], m_dt[k]) if anchor_is_gl else (m_dt[k], a_dt[a])
+                    if 0 <= diff <= self._win(base_window, d_gl, d_bk):
+                        valid.append((m, amt))
+                        idx_of[id(m)] = k
+
+                truncated = len(valid) > self.MAX_COMBINATION_POOL_SIZE
+                valid = self._closest_candidates(
+                    valid, a_amt, self.MAX_COMBINATION_POOL_SIZE,
+                    counterpart_text=_safe_str(rec, a_text_attr),
+                    text_of=lambda r, _attr=m_text_attr: _safe_str(r, _attr),
                 )
-                diff = abs(_days_between(
-                    _safe_str(gl1, "transaction_date"),
-                    _safe_str(gl2, "transaction_date"),
-                ) or 0)
-                if sim >= 0.6 or (sim >= 0.3 and diff <= 90):
-                    score = sim - diff * 0.001
-                    if best is None or score > best[0]:
-                        best = (score, j, gl2, sim, diff)
+                
+                if truncated:
+                    maybe_more.add(a)
 
-            if best:
-                _, j, gl2, sim, diff = best
-                used.add(i)
-                used.add(j)
-                matched.append((gl1, gl2, sim, diff))
+                sim_cache: Dict[int, float] = {}
 
-        for gl1, gl2, sim, diff in matched:
-            gl1_amt = self.gl_out(gl1) if self.gl_out(gl1) > 0 else self.gl_in(gl1)
-            reason  = (
-                "Ledger Reversal"
-                if sim >= 0.6 and diff <= 14
-                else "Unbanked Advance/Refund"
-            )
-            self.fuzzy_matches.append({
-                "ledger_id":        (
-                    f"{_safe_str(gl1, 'ledger_id')} & "
-                    f"{_safe_str(gl2, 'ledger_id')}"
-                ),
-                "bank_id":          None,
-                "adjustment_type":  f"Ledger-Side Zero-Sum ({reason})",
-                "confidence_score": "High" if sim >= 0.7 else "Medium",
-                "details": (
-                    f"Net-zero ledger entries of {gl1_amt:.2f} cancel out. "
-                    f"Spans {diff} day(s). Account name similarity={sim:.2f}."
-                ),
-            })
-            if gl1 in self.ledger_pool:
-                self.ledger_pool.remove(gl1)
-            if gl2 in self.ledger_pool:
-                self.ledger_pool.remove(gl2)
+                def sim_of(m):
+                    s = sim_cache.get(id(m))
+                    if s is None:
+                        if anchor_is_gl:
+                            s = text_similarity(_safe_str(rec, "account_name"), _safe_str(m, "narration"))
+                        else:
+                            s = text_similarity(_safe_str(m, "account_name"), _safe_str(rec, "narration"))
+                        sim_cache[id(m)] = s
+                    return s
 
+                # Best combination for this anchor = highest *average* narration similarity
+                # (so one good row padded with unrelated rows scores poorly), with a small
+                # preference for fewer items. Acceptance gate is unchanged: max similarity > 0.15.
+                best = None           # (score, tie, combo)
+                cap = min(self.MAX_COMBINATION_SIZE + 1, len(valid) + 1)
+                for r in range(2, cap):
+                    for combo in self._combos_with_sum(valid, a_amt, r):
+                        sims = [sim_of(x[0]) for x in combo]
+                        if max(sims) <= 0.15:
+                            continue
+                        
+                        score = sum(sims) / r - 0.02 * (r - 2)
+                        if best is None or score > best[0] + 1e-12:
+                            best = (score, 0, combo)
+                            
+                if best is None:
+                    continue
+                
+                score, _tie, combo = best
+                midx = tuple(sorted(idx_of[id(x[0])] for x in combo))
+                recs = [x[0] for x in combo]
+                amts = [x[1] for x in combo]
+                
+                if anchor_is_gl:
+                    build = partial(self._build_aggregated, rec, recs, amts, a_amt)
+                    edges.append((score, (a,), midx, build))
+                else:
+                    build = partial(self._build_many_to_one, recs, rec, amts, a_amt)
+                    edges.append((score, midx, (a,), build))
+                has_edge.add(a)
 
-    # Strategy 12 - Aggregated Split Transactions (1 Ledger : N Bank)
+            accepted = self._select(edges, used_gl, used_bk, gls, bks)
+            accepted_all.extend(accepted)
+            if not accepted:
+                break
+            matched_anchors = {
+                (gi if anchor_is_gl else bi)[0] if (gi if anchor_is_gl else bi) else None 
+                for gi, bi, _ in accepted
+            }
+            blocked = has_edge - matched_anchors
+            active = sorted((blocked | maybe_more) - matched_anchors)
+
+        self._emit(accepted_all, gls, bks)
+        self._rebuild_pools(gls, bks, used_gl, used_bk)
+
     def match_aggregated_transactions(self) -> None:
-        base_window = 3
-        for gl in list(self.ledger_pool):
-            is_out = self.gl_out(gl) > 0
-            gl_amt = self.gl_out(gl) if is_out else self.gl_in(gl)
-            if gl_amt <= 0 or not _safe_str(gl, "transaction_date"):
-                continue
+        self._match_combos(anchor_is_gl=True)
 
-            valid = [
-                (b, self.bank_out(b) if is_out else self.bank_in(b))
-                for b in self.bank_pool
-                if (self.bank_out(b) if is_out else self.bank_in(b)) > 0
-                and _safe_str(b, "date")
-                and (diff := _days_between(
-                    _safe_str(gl, "transaction_date"), _safe_str(b, "date")
-                )) is not None
-                and 0 <= diff <= self._effective_window(
-                    base_window, _safe_str(gl, "transaction_date"), _safe_str(b, "date")
-                )
-            ]
-            valid = self._closest_candidates(
-                valid, gl_amt, self.MAX_COMBINATION_POOL_SIZE,
-                counterpart_text=_safe_str(gl, "account_name"),
-                text_of=lambda b: _safe_str(b, "narration"),
-            )
-
-            found = None
-            cap   = min(self.MAX_COMBINATION_SIZE + 1, len(valid) + 1)
-            for r in range(2, cap):
-                for combo in itertools.combinations(valid, r):
-                    # use self._tol (DEFAULT)
-                    if _amounts_equal(gl_amt, sum(x[1] for x in combo), self._tol):
-                        if max(
-                            text_similarity(
-                                _safe_str(gl, "account_name"),
-                                _safe_str(x[0], "narration"),
-                            )
-                            for x in combo
-                        ) > 0.15:
-                            found = combo
-                            break
-                if found:
-                    break
-
-            if found:
-                banks   = [x[0] for x in found]
-                id_str  = " & ".join(str(getattr(b, "row_index", "?")) for b in banks)
-                amt_str = " + ".join(f"{x[1]:.2f}" for x in found)
-                self.fuzzy_matches.append({
-                    "ledger_id":        _safe_str(gl, "ledger_id"),
-                    "bank_id":          id_str,
-                    "adjustment_type":  f"Aggregated Split Transaction ({len(banks)} items)",
-                    "confidence_score": "High",
-                    "details": (
-                        f"Ledger ({gl_amt:.2f}) = sum of {len(banks)} bank entries "
-                        f"({amt_str})."
-                    ),
-                })
-                self.ledger_pool.remove(gl)
-                for b in banks:
-                    if b in self.bank_pool:
-                        self.bank_pool.remove(b)
-
-
-    # Strategy 13 - Many-to-One Aggregation (N Ledger : 1 Bank)
     def match_many_to_one_aggregation(self) -> None:
-        base_window = 3
-        for bank in list(self.bank_pool):
-            is_out = self.bank_out(bank) > 0
-            b_amt  = self.bank_out(bank) if is_out else self.bank_in(bank)
-            if b_amt <= 0 or not _safe_str(bank, "date"):
-                continue
-
-            valid = [
-                (gl, self.gl_out(gl) if is_out else self.gl_in(gl))
-                for gl in self.ledger_pool
-                if (self.gl_out(gl) if is_out else self.gl_in(gl)) > 0
-                and _safe_str(gl, "transaction_date")
-                and (diff := _days_between(
-                    _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )) is not None
-                and 0 <= diff <= self._effective_window(
-                    base_window, _safe_str(gl, "transaction_date"), _safe_str(bank, "date")
-                )
-            ]
-            valid = self._closest_candidates(
-                valid, b_amt, self.MAX_COMBINATION_POOL_SIZE,
-                counterpart_text=_safe_str(bank, "narration"),
-                text_of=lambda gl: _safe_str(gl, "account_name"),
-            )
-
-            found = None
-            cap   = min(self.MAX_COMBINATION_SIZE + 1, len(valid) + 1)
-            for r in range(2, cap):
-                for combo in itertools.combinations(valid, r):
-                    if _amounts_equal(b_amt, sum(x[1] for x in combo), self._tol):
-                        if max(
-                            text_similarity(
-                                _safe_str(x[0], "account_name"),
-                                _safe_str(bank, "narration"),
-                            )
-                            for x in combo
-                        ) > 0.15:
-                            found = combo
-                            break
-                if found:
-                    break
-
-            if found:
-                gls     = [x[0] for x in found]
-                id_str  = " & ".join(_safe_str(gl, "ledger_id") for gl in gls)
-                amt_str = " + ".join(f"{x[1]:.2f}" for x in found)
-                self.fuzzy_matches.append({
-                    "ledger_id":        id_str,
-                    "bank_id":          getattr(bank, "row_index", None),
-                    "adjustment_type":  f"Many-to-One Aggregation ({len(gls)} items)",
-                    "confidence_score": "High",
-                    "details": (
-                        f"Bank ({b_amt:.2f}) = sum of {len(gls)} ledger entries "
-                        f"({amt_str})."
-                    ),
-                })
-                self.bank_pool.remove(bank)
-                for gl in gls:
-                    if gl in self.ledger_pool:
-                        self.ledger_pool.remove(gl)
+        self._match_combos(anchor_is_gl=False)
 
 
     # Strategy 14 - One-to-Many Split Charge  (1 Ledger : 1 Bank where bank = 2×)
+    def _build_split_charge(
+        self, bk, gl, b_amt, l_amt
+    ):
+        match = {
+            "ledger_id":        getattr(gl, "ledger_id", "N/A"),
+            "bank_id":          getattr(bk, "row_index", "N/A"),
+            "adjustment_type":  "Split Charge Match (1st Half)",
+            "confidence_score": "High",
+            "details": (
+                f"Bank Row [{getattr(bk, 'row_index', '?')}] "
+                f"({_get_date(bk)}, ₹{b_amt:.2f}, "
+                f"'{getattr(bk, 'narration', 'N/A')}') "
+                f"is exactly 2× Ledger [{getattr(gl, 'ledger_id', '?')}] "
+                f"({_get_date(gl)}, ₹{l_amt:.2f}, "
+                f"'{getattr(gl, 'account_name', 'N/A')}')."
+            ),
+        }
+        audit = AuditInvestigationItem(
+            bank_row_index  = getattr(bk, "row_index", -1),
+            narration       = f"{getattr(bk, 'narration', 'Bank Charge')} (Unrecorded 2nd Half)",
+            amount          = l_amt,
+            direction       = "debit",
+            flag_reason     = "Bank deducted exactly 2× the recorded ledger expense.",
+            action_required = f"Post adjusting GL expense journal entry for ₹{l_amt:.2f}.",
+        )
+        return match, audit
+
     def match_split_charge(self) -> None:
-        for bk in list(self.bank_pool):
-            b_amt  = _get_amt(bk)
-            b_date = _get_date(bk)
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_amts = [_get_amt(g) for g in gls]
+        gl_dts = [_get_date(g) for g in gls]
+        index = _AmountIndex(
+            (a, i) 
+            for i, a in enumerate(gl_amts) 
+            if a > 0 and gl_dts[i] is not None
+        )
+
+        edges: List[Edge] = []
+        for j, bk in enumerate(bks):
+            b_amt, b_date = _get_amt(bk), _get_date(bk)
             if b_amt <= 0 or b_date is None:
                 continue
-
-            matched_gl = None
-            for gl in list(self.ledger_pool):
-                l_amt  = _get_amt(gl)
-                l_date = _get_date(gl)
-                if l_amt <= 0 or l_date is None:
-                    continue
-
+            
+            local: List[Edge] = []
+            for i in index.between((b_amt - self._tol) / 2, (b_amt + self._tol) / 2):
+                l_amt, l_date = gl_amts[i], gl_dts[i]
                 if not _amounts_equal(b_amt, l_amt * 2, self._tol):
                     continue
-
+                
                 base_window = 30
                 window = base_window + self._CROSS_MONTH_BUFFER if (
                     (b_date.year, b_date.month) != (l_date.year, l_date.month)
                 ) else base_window
-                if abs((b_date - l_date).days) > window:
+                days = abs((b_date - l_date).days)
+                if days > window:
                     continue
-
-                matched_gl = gl
-                break   
-
-            if matched_gl is None:
-                continue    
-
-            l_amt = _get_amt(matched_gl)
-
-            self.fuzzy_matches.append({
-                "ledger_id":        getattr(matched_gl, "ledger_id", "N/A"),
-                "bank_id":          getattr(bk, "row_index", "N/A"),
-                "adjustment_type":  "Split Charge Match (1st Half)",
-                "confidence_score": "High",
-                "details": (
-                    f"Bank Row [{getattr(bk, 'row_index', '?')}] "
-                    f"({_get_date(bk)}, ₹{b_amt:.2f}, "
-                    f"'{getattr(bk, 'narration', 'N/A')}') "
-                    f"is exactly 2× Ledger [{getattr(matched_gl, 'ledger_id', '?')}] "
-                    f"({_get_date(matched_gl)}, ₹{l_amt:.2f}, "
-                    f"'{getattr(matched_gl, 'account_name', 'N/A')}')."
-                ),
-            })
-
-            if bk in self.bank_pool:
-                self.bank_pool.remove(bk)
-            if matched_gl in self.ledger_pool:
-                self.ledger_pool.remove(matched_gl)
-            self.audit_investigation_items.append(
-                AuditInvestigationItem(
-                    bank_row_index  = getattr(bk, "row_index", -1),
-                    narration       = (
-                        f"{getattr(bk, 'narration', 'Bank Charge')} "
-                        f"(Unrecorded 2nd Half)"
-                    ),
-                    amount          = l_amt,
-                    direction       = "debit",
-                    flag_reason     = "Bank deducted exactly 2× the recorded ledger expense.",
-                    action_required = (
-                        f"Post adjusting GL expense journal entry for ₹{l_amt:.2f}."
-                    ),
-                )
-            )
+                
+                sim = text_similarity(_safe_str(gls[i], "account_name"), _safe_str(bk, "narration"))
+                score = self._W_TEXT * sim - self._W_DAY * days
+                local.append((
+                    score, (i,), (j,), partial(
+                        self._build_split_charge, bk, gls[i], b_amt, l_amt
+                    )
+                ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
 
 
     # Strategy 15 - Base Fee + Tax Aggregation (1 Ledger : 2 Bank rows)
+    FEE_TAX_GL_WINDOW_DAYS: Optional[int] = None
+
+    def _build_fee_tax(
+        self, gl, b1, b2, gl_amt, b1_amt, b2_amt, adjacency
+    ):
+        return ({
+            "ledger_id":        _safe_str(gl, "ledger_id"),
+            "bank_id":          f"{getattr(b1, 'row_index', 'N/A')} & {getattr(b2, 'row_index', 'N/A')}",
+            "adjustment_type":  "Base Fee + Tax Lumped GL Match",
+            "confidence_score": "High",
+            "details": (
+                f"Lumped ledger (₹{gl_amt:.2f}) matched bank fee "
+                f"(₹{b1_amt:.2f}) + tax/GST (₹{b2_amt:.2f}). "
+                f"Rows not required to be adjacent - matched by date proximity "
+                f"(≤{adjacency} day(s) apart)."
+            ),
+        }, None)
+
     def match_base_fee_plus_tax(self) -> None:
         base_adjacency_days = 2
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
 
-        for gl in list(self.ledger_pool):
+        edges: List[Edge] = []
+        for i, gl in enumerate(gls):
             is_out = self.gl_out(gl) > 0
             gl_amt = self.gl_out(gl) if is_out else self.gl_in(gl)
-            if gl_amt <= 0 or not _safe_str(gl, "transaction_date"):
+            if gl_amt <= 0 or gl_dt[i] is None:
                 continue
-
-            candidates = [
-                b for b in self.bank_pool
-                if (self.bank_out(b) if is_out else self.bank_in(b)) > 0
-                and _safe_str(b, "date")
+            
+            amt_of = self.bank_out if is_out else self.bank_in
+            cand = [
+                (amt_of(b), j) for j, b in enumerate(bks)
+                if amt_of(b) > 0 and bk_dt[j] is not None
+                and (
+                    self.FEE_TAX_GL_WINDOW_DAYS is None or 
+                    abs((bk_dt[j] - gl_dt[i]).days) <= self.FEE_TAX_GL_WINDOW_DAYS
+                )
             ]
+            index = _AmountIndex(cand)
+            amt_by_j = {j: a for a, j in cand}
 
-            found_pair: Optional[tuple] = None
-
-            for i in range(len(candidates)):
-                if found_pair:
-                    break
-                b1     = candidates[i]
-                b1_amt = self.bank_out(b1) if is_out else self.bank_in(b1)
-                b1_d   = _safe_str(b1, "date")
-
-                for j in range(len(candidates)):
-                    if i == j:
+            local: List[Edge] = []
+            for a1, j1 in cand:
+                for j2 in index.between(gl_amt - a1 - self._tol, gl_amt - a1 + self._tol):
+                    if j2 <= j1:
+                        continue                          # unordered pair, lower pool index = "base fee"
+                    
+                    a2 = amt_by_j[j2]
+                    if not _amounts_equal(a1 + a2, gl_amt, self._tol):
                         continue
-                    b2     = candidates[j]
-                    b2_amt = self.bank_out(b2) if is_out else self.bank_in(b2)
-                    b2_d   = _safe_str(b2, "date")
-
-                    day_gap = _days_between(b1_d, b2_d)
-                    adjacency_days = self._effective_window(
-                        base_adjacency_days, b1_d, b2_d
-                    )
-                    if day_gap is None or abs(day_gap) > adjacency_days:
+                    
+                    gap = (bk_dt[j2] - bk_dt[j1]).days
+                    adjacency = self._win(base_adjacency_days, bk_dt[j1], bk_dt[j2])
+                    if abs(gap) > adjacency:
                         continue
-
-                    if not _amounts_equal(b1_amt + b2_amt, gl_amt, self._tol):
-                        continue
-
-                    found_pair = (b1, b1_amt, b2, b2_amt)
-                    break   
-
-            if found_pair is None:
-                continue
-
-            b1, b1_amt, b2, b2_amt = found_pair
-            self.fuzzy_matches.append({
-                "ledger_id":        _safe_str(gl, "ledger_id"),
-                "bank_id":          (
-                    f"{getattr(b1, 'row_index', 'N/A')} & "
-                    f"{getattr(b2, 'row_index', 'N/A')}"
-                ),
-                "adjustment_type":  "Base Fee + Tax Lumped GL Match",
-                "confidence_score": "High",
-                "details": (
-                    f"Lumped ledger (₹{gl_amt:.2f}) matched bank fee "
-                    f"(₹{b1_amt:.2f}) + tax/GST (₹{b2_amt:.2f}). "
-                    f"Rows not required to be adjacent - matched by date proximity "
-                    f"(≤{adjacency_days} day(s) apart)."
-                ),
-            })
-            self.ledger_pool.remove(gl)
-            if b1 in self.bank_pool:
-                self.bank_pool.remove(b1)
-            if b2 in self.bank_pool:
-                self.bank_pool.remove(b2)
-
-
+                    
+                    s1 = text_similarity(_safe_str(gl, "account_name"), _safe_str(bks[j1], "narration"))
+                    s2 = text_similarity(_safe_str(gl, "account_name"), _safe_str(bks[j2], "narration"))
+                    score = self._W_TEXT * (s1 + s2) / 2 - self._W_DAY * abs(gap)
+                    local.append((
+                        score, (i,), (j1, j2), partial(
+                            self._build_fee_tax, gl, bks[j1], bks[j2], gl_amt, a1, a2, adjacency
+                        )
+                    ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
+        
+    
     # Orchestrator
     def run(self) -> dict:
 

@@ -62,6 +62,16 @@ class Config(BaseSettings):
     LOG_FORMAT: str = "%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s"
 
     SCHEDULER_API_ENABLED: bool = True
+    
+    # celery queues
+    Q_ENTRY: str = "entry_point.queue"
+    Q_OCR: str = "ocr.queue"
+    Q_MATCHER: str = "matcher.queue"
+    Q_AI: str = "ai.queue"
+    Q_LEDGER: str = "ledger.queue"
+    Q_SERVICE: str = "service.queue"
+    Q_DB: str = "db_storage.queue"
+    Q_REPORT: str = "report.queue"
 
     model_config = SettingsConfigDict(
         env_file=".env",

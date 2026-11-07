@@ -29,7 +29,7 @@ def create_celery(
         "tasks.bill_pipeline",
         "tasks.full_run",
         "tasks.generate_report_tasks",
-        "tasks.entry",
+        "tasks.entry_task",
         "tasks.run_matcher",
         "tasks.service_task",
         "tasks.db_storage",

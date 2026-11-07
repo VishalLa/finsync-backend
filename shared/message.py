@@ -12,6 +12,7 @@ T_SERVICE_SAVE = "service.save_results"
 T_REPORT_BUILD = "report.build"
 T_DB_STORE_INPUTS = "db.store_inputs"
 T_DB_STORE_RESULTS = "db.store_results"
+T_DB_MARK_FAILED = "db.mark_run_failed"
 
 
 class BadMessage(ValueError):
@@ -110,6 +111,15 @@ class DBPersistResultsMsg(_Msg):
     run_id: str
     user_id: str
     result_ref: str
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass
+class DBMarkFailedMsg(_Msg):
+    """Any worker -> DB writer: a stage failed permanently."""
+    run_id: str
+    user_id: str
+    error: str
     schema_version: int = SCHEMA_VERSION
 
 

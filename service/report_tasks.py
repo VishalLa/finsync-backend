@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import date as date_
 from typing import Optional, Dict, Any
 
-from service.bank_rec_service.run_result_service_bank_rec import ResultBankRec
-from service.generate_reports import GenerateReports
-from app.celery import celery_app
+from .bank_rec_service.run_result_service_bank_rec import ResultBankRec
+from .generate_reports import GenerateReports
+from .celery_app import celery_app
 
 
 _generate_report: Optional[GenerateReports] = None

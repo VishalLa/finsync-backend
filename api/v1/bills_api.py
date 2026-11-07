@@ -5,19 +5,19 @@ from typing import Optional
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
-from service.helper import _log_call
-from service.run_pipelines import RunBill
+from shared.logging_utils import log_call as _log_call
+from service.client import ServiceClient
 
 
 app = Blueprint("bills_api", __name__)
 
-_run_bill: Optional[RunBill] = None
+_run_bill: Optional[ServiceClient] = None
 
 
-def _get_run_bill() -> RunBill:
+def _get_run_bill() -> ServiceClient:
     global _run_bill
     if _run_bill is None:
-        _run_bill = RunBill()
+        _run_bill = ServiceClient("run_bill")
     return _run_bill
 
 

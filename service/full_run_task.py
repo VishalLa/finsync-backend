@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app.celery import celery_app
+from service.celery_app import celery_app
 from service.run_pipelines import FullRun
 
 

@@ -9,13 +9,13 @@ The FinSync backend is a Flask API for bank reconciliation, bill processing, led
 | Component | Responsibility |
 | --- | --- |
 | `api/` | Flask blueprints and request validation |
-| `service/` | Application workflows, persistence, report generation, and ledger rebuilds |
-| `tasks/` | Celery tasks for reconciliation, bills, GSTR-1, and reports |
+| `service/` | The only PostgreSQL client; DB RPC, persistence, reports, and legacy DB workflows |
 | `matcher/` | Exact, fuzzy, memory, AI-assisted, and residual reconciliation stages |
-| `entry_point/` | Bank/ledger file loading, OCR, and invoice extraction |
+| `entry_point/` | Bank/ledger file loading and the opt-in OCR worker app |
 | `ledger/` | Journal, general-ledger, TDS, and GSTR-1 domain logic |
 | `database/` | SQLAlchemy models, database manager, and authentication models |
 | `schema/` | Domain data structures used by the pipelines |
+| `shared/` | Queue messages, light settings, storage, and Celery factory |
 
 The matcher and ledger packages have their own implementation notes: [matcher/README.md](matcher/README.md) and [ledger/README.md](ledger/README.md).
 
@@ -26,14 +26,14 @@ Client
   │ JWT-authenticated HTTP requests
   ▼
 Flask API (`api/`)
-  ├── synchronous reads: user profile, task state, reconciliation results, trial balance
-  └── queued work ──► Redis ──► Celery worker (`tasks/`)
-                                      ├── reconciliation and Excel exports
-                                      ├── bill OCR, extraction, and journal processing
-                                      └── GSTR-1 generation
-                                                │
-                                                ▼
-                                           PostgreSQL
+  ├── synchronous DB requests ──► Redis RPC ──► service worker
+  └── queued work ──────────────► Redis queues
+                                     ├── entry_point worker
+                                     ├── matcher worker
+                                     └── service worker
+                                           │
+                                           ▼
+                                      PostgreSQL
 
 Optional local services: PaddleOCR processes uploaded bills; Ollama is used by the AI matching stage.
 ```
@@ -49,7 +49,7 @@ API upload
   -> db.store_results        persist matches, audit rows, and final status
 ```
 
-Queue messages contain the run/user IDs and references under `STORAGE_DIR/runs/<run_id>/`; raw files and normalized/results JSON stay in shared storage rather than being sent through Redis. The database-input stage intentionally finishes before matching starts so match rows can reference persisted ledger and bank rows. Compose runs dedicated consumers for the new stages and retains a worker for existing tasks. All consumers must share the same storage volume; use shared object storage before placing workers on separate hosts.
+Queue messages contain the run/user IDs and references under `STORAGE_DIR/runs/<run_id>/`; raw files and normalized/results JSON stay in shared storage rather than being sent through Redis. The database-input stage intentionally finishes before matching starts so match rows can reference persisted ledger and bank rows. The API, entry, and matcher processes do not import database code or receive database credentials. All consumers must share the same storage volume; use shared object storage before placing workers on separate hosts.
 
 ## Requirements
 
@@ -129,16 +129,15 @@ python manage_db.py
 python main.py
 ```
 
-In another terminal, with the same virtual environment and configuration:
+In another terminal, with Redis, PostgreSQL, and the same storage configuration:
 
 ```bash
-celery -A app.celery worker --loglevel=info --queues=entry_point.queue
-celery -A app.celery worker --loglevel=info --queues=matcher.queue
-celery -A app.celery worker --loglevel=info --queues=service.queue
-celery -A app.celery worker --loglevel=info --queues=db_storage.queue
+celery -A entry_point.celery_app:celery_app worker --loglevel=info --queues=entry_point.queue
+celery -A matcher.celery_app:celery_app worker --loglevel=info --queues=matcher.queue
+celery -A service.celery_app:celery_app worker --loglevel=info --queues=service.queue,db_storage.queue
 ```
 
-Run the existing default-queue worker separately for bills and other legacy tasks. `manage_db.py` applies the additive run association columns used for per-run ignored/audit records.
+The service worker handles synchronous API-to-database RPC and all retained DB-backed Celery tasks. `manage_db.py` applies the additive run association columns used for per-run ignored/audit records.
 
 The Flask development server listens on `http://localhost:8000`.
 
@@ -154,15 +153,15 @@ ollama serve
 Add the Docker configuration values above to `Backend/.env`, then run:
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.microservices.yml up --build
 ```
 
-Compose starts `postgres_db`, `redis_server`, `backend`, `worker`, and `ollama`. The API is exposed on port `8000`; Ollama is exposed on `11434`. PostgreSQL and Redis are also currently exposed on `5432` and `6379` for local development.
+Compose builds separate API, entry, matcher, and service images. Only the service image receives database credentials. The legacy worker is retained for unmigrated queues; OCR remains opt-in under the `next` profile. The API is exposed on port `8000`.
 
 Pull the model once the Ollama container is healthy:
 
 ```bash
-docker compose exec ollama ollama pull phi3:latest
+docker compose -f docker-compose.microservices.yml exec ollama ollama pull phi3:latest
 ```
 
 ## API overview
@@ -216,14 +215,14 @@ Bank journal posting produce rows that can be matched to the statement.
 
 ## Background work
 
-Celery imports these task modules through `app/celery.py` and uses Redis for both broker and result backend:
+Celery uses Redis for both broker and result backend. Worker apps are declared with their domain packages:
 
-- `tasks.bank_rec`: pre/post persistence helpers and the reconciliation pipeline.
-- `tasks.bill_pipeline`: bill processing and GSTR-1 generation.
-- `tasks.full_run`: bill OCR/extraction, journal persistence, automatic ledger formation, and bank reconciliation in one job.
-- `tasks.generate_report_tasks`: bank reconciliation, GSTR-1, journal, ledger, and TDS report generation.
+- `entry_point.celery_app`: file parsing and handoff to the service.
+- `matcher.celery_app`: reconciliation and handoff to the service.
+- `service.celery_app`: DB persistence, synchronous API RPC, bills, reports, and full-run workflows.
+- `ledger.celery_app`: reserved for ledger-specific worker tasks; DB-dependent ledger operations remain in `service`.
 
-Tasks are configured to retry up to three times, except `tasks.full_run`, which runs once to avoid creating duplicate bills and journal entries. Keep the API and worker connected to the same Redis instance and database.
+Only the service worker receives PostgreSQL credentials. The API uses Celery result RPC for DB-backed operations, and workers share the same Redis and storage volume.
 
 ## Operational notes
 

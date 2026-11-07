@@ -10,7 +10,7 @@ import pytest
 
 import matcher
 from matcher import reconcile
-from matcher.fuzzy_match import _AmountIndex
+from matcher.fuzzy_match import FuzzyMatcher, _AmountIndex
 from schema import BankStatement, LedgerFormat
 
 
@@ -80,6 +80,26 @@ def test_amount_index_uses_declared_slots() -> None:
     assert index.between(11.0, 13.0) == [1]
 
 
+def test_fuzzy_matcher_only_adds_present_audit_items() -> None:
+    matcher = FuzzyMatcher([], [])
+    ledger = LedgerFormat(ledger_id="L-1", account_name="Vendor")
+    bank = BankStatement(row_index=1, bank_name="Test", template_version="1")
+    matched = {"match": True}
+    audit = {"flag_reason": "manual review"}
+
+    matcher._emit(
+        [
+            ((0,), (0,), lambda: (matched, None)),
+            ((0,), (0,), lambda: (matched, audit)),
+        ],
+        [ledger],
+        [bank],
+    )
+
+    assert matcher.fuzzy_matches == [matched, matched]
+    assert matcher.audit_investigation_items == [audit]
+
+
 def test_blank_bank_currency_fields_are_float_zeroes() -> None:
     bank = BankStatement(
         row_index=1,
@@ -95,21 +115,19 @@ def test_blank_bank_currency_fields_are_float_zeroes() -> None:
     assert isinstance(bank.credit_amount, float)
 
 
-def test_celery_default_include_and_entry_task_import() -> None:
+def test_entry_task_is_registered_on_its_own_app() -> None:
     project_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env["STORAGE_DIR"] = "/tmp/latice-step0-task-import"
+    env.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
     result = subprocess.run(
         [
             sys.executable,
             "-c",
             (
-                "from app.celery import celery_app\n"
-                "include = celery_app.conf.include\n"
-                "assert 'tasks.entry_task' in include\n"
-                "assert 'tasks.matcher' not in include\n"
-                "assert 'tasks.service' not in include\n"
-                "from tasks.entry_task import process_run\n"
+                "from entry_point.celery_app import celery_app\n"
+                "celery_app.loader.import_task_module('entry_point.tasks')\n"
+                "from entry_point.tasks import process_run\n"
                 "assert process_run.name == 'entry.process_run'\n"
             ),
         ],

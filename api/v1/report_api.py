@@ -7,22 +7,15 @@ from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request, send_file
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
-from tasks.generate_report_tasks import (
-    generate_ledger_report as generate_ledger_report_task,
-    generate_report_bank_rec as generate_bank_reconciliation_task,
-    generate_report_gstr1 as generate_gstr1_task,
-    generate_report_journal as generate_journal_task,
-    generate_tds_reprot as generate_tds_task,
-)
-from app.celery import celery_app
-from service.helper import _log_call
+from service.client import celery_app, enqueue_task
+from shared.logging_utils import log_call as _log_call
 
 
 app = Blueprint("reports", __name__)
 
 
-def _enqueue(task, **kwargs):
-    result = task.delay(**kwargs)
+def _enqueue(task_name: str, **kwargs):
+    result = enqueue_task(task_name, kwargs=kwargs)
     return jsonify({
         "ok": True,
         "status": "queued",
@@ -105,7 +98,7 @@ def generate_bank_reconciliation_report():
         }), 400
 
     return _enqueue(
-        generate_bank_reconciliation_task,
+        "tasks.generate_bank_rec_report",
         run_id=run_id,
         user_id=get_jwt_identity(),
     )
@@ -124,7 +117,7 @@ def generate_gstr1_report():
         }), 400
 
     return _enqueue(
-        generate_gstr1_task,
+        "tasks.generate_gstr1_reprot",
         period_label=period_label,
         user_id=get_jwt_identity(),
     )
@@ -151,7 +144,7 @@ def generate_journal_report():
         }), 400
 
     return _enqueue(
-        generate_journal_task,
+        "tasks.generate_journal_report",
         date_from=date_from.isoformat(),
         date_to=date_to.isoformat(),
         user_id=get_jwt_identity(),
@@ -172,7 +165,7 @@ def generate_ledger_report():
         }), 400
 
     return _enqueue(
-        generate_ledger_report_task,
+        "tasks.generate_ledger_report",
         as_on=as_on.isoformat(),
         user_id=get_jwt_identity(),
     )
@@ -199,7 +192,7 @@ def generate_tds_report():
         }), 400
 
     return _enqueue(
-        generate_tds_task,
+        "tasks.generate_tds_report",
         period_start=period_start.isoformat(),
         period_end=period_end.isoformat(),
         user_id=get_jwt_identity(),

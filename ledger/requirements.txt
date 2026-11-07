@@ -1,0 +1,6 @@
+celery==5.6.3
+redis==8.0.1
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+python-dateutil==2.9.0.post0

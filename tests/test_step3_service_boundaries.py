@@ -8,17 +8,16 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    ("service_name", "allowed_database"),
+    ("task_module", "is_database_service"),
     [
-        ("entry", False),
-        ("matcher", False),
-        ("reports", False),
-        ("db_writer", True),
+        ("entry_point.tasks", False),
+        ("matcher.tasks", False),
+        ("service.tasks", True),
     ],
 )
-def test_service_tasks_respect_import_boundaries(
-    service_name: str,
-    allowed_database: bool,
+def test_task_modules_respect_import_boundaries(
+    task_module: str,
+    is_database_service: bool,
     tmp_path: Path,
 ) -> None:
     project_root = Path(__file__).resolve().parents[1]
@@ -26,9 +25,9 @@ def test_service_tasks_respect_import_boundaries(
 import importlib
 import sys
 
-importlib.import_module("services.{service_name}.tasks")
-forbidden = ["flask", "service", "tasks"]
-{"assert any(name == 'database' or name.startswith('database.') for name in sys.modules)" if allowed_database else "forbidden.append('database')"}
+importlib.import_module("{task_module}")
+forbidden = ["services", "tasks"]
+{"assert any(name == 'database' or name.startswith('database.') for name in sys.modules)" if is_database_service else "forbidden.extend(['database', 'flask', 'service'])"}
 loaded = sorted(
     name for name in sys.modules
     if any(name == prefix or name.startswith(prefix + ".") for prefix in forbidden)
@@ -37,7 +36,7 @@ assert not loaded, loaded
 """
     env = {
         "REDIS_URL": "redis://127.0.0.1:6379/0",
-        "STORAGE_DIR": str(tmp_path / service_name),
+        "STORAGE_DIR": str(tmp_path / task_module.replace(".", "-")),
         "OLLAMA_URL": "http://127.0.0.1:11434",
         "PYTHONPATH": str(project_root),
     }
@@ -129,20 +128,24 @@ def test_db_mark_failed_task_repeats_mark_status_idempotently(
     monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("OLLAMA_URL", "http://127.0.0.1:11434")
-    from services.db_writer import tasks as db_tasks
+    from service import tasks as db_tasks
     from shared.message import DBMarkFailedMsg
 
     updates = []
+
+    class FakeBase:
+        get_manager = object()
 
     class ResultService:
         def mark_run_status(self, run_id, status, error_message=None):
             updates.append((run_id, status, error_message))
             return True
 
+    monkeypatch.setattr(db_tasks, "Base", FakeBase)
     monkeypatch.setattr(
         db_tasks,
-        "get_persistence_services",
-        lambda: (None, ResultService()),
+        "ResultBankRec",
+        lambda db_manager: ResultService(),
     )
     payload = DBMarkFailedMsg(
         run_id="run-1",
@@ -162,3 +165,33 @@ def test_db_mark_failed_task_repeats_mark_status_idempotently(
         ("run-1", "failed", "matcher failed"),
         ("run-1", "failed", "matcher failed"),
     ]
+
+
+def test_api_import_does_not_load_database_modules(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    env = {
+        "REDIS_URL": "redis://127.0.0.1:6379/0",
+        "STORAGE_DIR": str(tmp_path / "api-storage"),
+        "SECRET_KEY": "test-secret-key-not-used-in-production",
+        "JWT_SECRET_KEY": "another-test-secret-key-not-production",
+        "PYTHONPATH": str(project_root),
+    }
+    script = """
+import sys
+import app
+assert not any(
+    name == 'database' or name.startswith('database.') for name in sys.modules
+)
+assert not any(
+    name == 'sqlalchemy' or name.startswith('sqlalchemy.') for name in sys.modules
+)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import re
 from typing import Any, Dict, Tuple, Optional
 
 from flask_jwt_extended import create_access_token
@@ -17,6 +16,7 @@ from core.security import verify_token
 
 from .helper import _log_db_errors
 from ._base import Base
+from shared.validation import is_valid_email
 # from .run_result_service_bank_rec import ResultBankRec
 
 
@@ -29,17 +29,7 @@ class UserService:
 
     @staticmethod
     def validate_email(email: str) -> bool:
-        if not isinstance(email, str) or len(email) > 254:
-            return False
-
-        return bool(
-            re.fullmatch(
-                r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+"
-                r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-                r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+",
-                email,
-            )
-        )
+        return is_valid_email(email)
         
         
     @staticmethod

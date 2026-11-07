@@ -19,6 +19,7 @@ def create_celery(name: str, include: Sequence[str] = ()) -> Celery:
         "service.*": {"queue": settings.Q_SERVICE},
         "db.*": {"queue": settings.Q_DB},
         "report.*": {"queue": settings.Q_REPORT},
+        "tasks.*": {"queue": settings.Q_SERVICE},
     }
     app = Celery(
         name,

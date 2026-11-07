@@ -17,7 +17,7 @@ from api.v1 import (
     report_app,
 )
 
-from core.config import Config
+from shared.api_settings import APISettings
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def _configure_logging(debug: bool) -> None:
     )
 
 
-def _validate_secrets(config: Config) -> None:
+def _validate_secrets(config: APISettings) -> None:
     """Refuse to boot in production with missing or weak secrets."""
     if config.DEBUG:
         return
@@ -81,7 +81,7 @@ def _register_error_handlers(app: Flask) -> None:
 
 
 def create_app() -> Flask:
-    config = Config.from_env()
+    config = APISettings.from_env()
     _configure_logging(config.DEBUG)
     _validate_secrets(config)
 
@@ -115,7 +115,7 @@ def create_app() -> Flask:
     app.register_blueprint(auth_app,     url_prefix="/auth")
     app.register_blueprint(pipeline_app, url_prefix="/api/pipeline")
     app.register_blueprint(bank_rec_app, url_prefix="/api/bank-rec")
-    app.register_blueprint(bills_app,     url_prefix="/api/bills")
+    app.register_blueprint(bills_app,    url_prefix="/api/bills")
     app.register_blueprint(ledger_app,   url_prefix="/api/ledger")
     app.register_blueprint(report_app,   url_prefix="/api")
 

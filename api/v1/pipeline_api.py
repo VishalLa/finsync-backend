@@ -10,25 +10,22 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
-from app.celery import celery_app
-from service.helper import _log_call
-from service.run_pipelines import RunBill
-from tasks.bill_pipeline import generate_gstr1, process_bill
-from tasks.full_run import run_full_pipeline
+from service.client import ServiceClient, celery_app, enqueue_task
+from shared.logging_utils import log_call as _log_call
 
 
 app = Blueprint("pipeline_api", __name__)
 
 
-_run_bill: Optional[RunBill] = None
+_run_bill: Optional[ServiceClient] = None
 _allowed_extensions = {"png", "jpg", "jpeg", "pdf"}
 _bank_statement_extensions = {"csv", "xlsx"}
 
 
-def _get_run_bill() -> RunBill:
+def _get_run_bill() -> ServiceClient:
     global _run_bill
     if _run_bill is None:
-        _run_bill = RunBill()
+        _run_bill = ServiceClient("run_bill")
     return _run_bill
 
 
@@ -99,7 +96,7 @@ def upload_bill():
         raw_extracted_data=raw_data,
     )
     
-    task = process_bill.apply_async(args=[bill_id], task_id=bill_id)
+    task = enqueue_task("tasks.process_bills", args=[bill_id], task_id=bill_id)
     return jsonify({
         "ok": True,
         "bill_id": bill_id,
@@ -198,7 +195,8 @@ def fullrun():
                 os.remove(path)
         raise
 
-    task = run_full_pipeline.apply_async(
+    task = enqueue_task(
+        "tasks.run_full_pipeline",
         args=[get_jwt_identity(), image_paths, bank_path],
     )
     
@@ -227,11 +225,14 @@ def generate_gstr1_report():
             "error": f"Missing fields: {', '.join(missing)}"
         }), 400
 
-    task = generate_gstr1.delay(
-        get_jwt_identity(),
-        data["period_label"],
-        data["period_start"],
-        data["period_end"],
+    task = enqueue_task(
+        "tasks.generate_gstr1",
+        args=[
+            get_jwt_identity(),
+            data["period_label"],
+            data["period_start"],
+            data["period_end"],
+        ],
     )
     return jsonify({
         "ok": True,

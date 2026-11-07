@@ -8,13 +8,9 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
-from app.celery import celery_app
-from service.bank_rec_service.run_result_service_bank_rec import ResultBankRec
-from service.helper import _log_call
-from service.ledger_service.rec_journal_posting import RecJournalPosting
-from service.run_pipelines import RunBankRec
-from tasks.generate_report_tasks import generate_report_bank_rec
+from service.client import ServiceClient, enqueue_task
 
+from shared.logging_utils import log_call as _log_call
 from shared.message import EntryProcessMsg, T_ENTRY_PROCESS
 from shared.status import get_status, set_status
 from shared.storage import resolve, run_ref, save_stream
@@ -22,23 +18,19 @@ from shared.storage import resolve, run_ref, save_stream
 
 app = Blueprint("bank_rec_api", __name__)
 
-_run_bank_rec: Optional[RunBankRec] = None
-_result_service: Optional[ResultBankRec] = None
-_journal_posting: Optional[RecJournalPosting] = None
+_result_service: Optional[ServiceClient] = None
+_journal_posting: Optional[ServiceClient] = None
 
 
-def _services() -> Tuple[RunBankRec, ResultBankRec, RecJournalPosting]:
-    global _run_bank_rec, _result_service, _journal_posting
-    if _run_bank_rec is None:
-        _run_bank_rec = RunBankRec()
-        
+def _services() -> Tuple[None, ServiceClient, ServiceClient]:
+    global _result_service, _journal_posting
     if _result_service is None:
-        _result_service = ResultBankRec(db_manager=_run_bank_rec.db_manager)
+        _result_service = ServiceClient("result")
         
     if _journal_posting is None:
-        _journal_posting = RecJournalPosting(db_manager=_run_bank_rec.db_manager)
+        _journal_posting = ServiceClient("journal")
         
-    return _run_bank_rec, _result_service, _journal_posting
+    return None, _result_service, _journal_posting
 
 
 def _allowed(filename: str) -> bool:
@@ -94,7 +86,7 @@ def start_reconciliation():
             state="queued", 
             user_id=user_id
         )
-        celery_app.send_task(
+        enqueue_task(
             T_ENTRY_PROCESS,
             args=[message.to_dict()],
             task_id=run_id,
@@ -214,9 +206,9 @@ def run_result(run_id: str):
 @jwt_required()
 @_log_call
 def generate_report(run_id: str):
-    task = generate_report_bank_rec.delay(
-        run_id=run_id, 
-        user_id=get_jwt_identity()
+    task = enqueue_task(
+        "tasks.generate_bank_rec_report",
+        kwargs={"run_id": run_id, "user_id": get_jwt_identity()},
     )
     
     return jsonify({
@@ -253,7 +245,7 @@ def approve_journal_entries(run_id: str):
     return jsonify(posting.approve_journal_entries(
         approved_entries=entries,
         user_id=get_jwt_identity(),
-        run_id=run.id,
+        run_id=run["id"],
     )), 200
 
 

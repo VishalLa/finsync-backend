@@ -6,29 +6,23 @@ from typing import Optional, Tuple
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
-from service.generate_reports import GenerateReports
-from service.helper import _log_call
-from service.ledger_service.rebuild_service_ledger import RebuildServiceLedger
-from service.run_pipelines import RunBill
+from service.client import ServiceClient
+from shared.logging_utils import log_call as _log_call
 
 
 app = Blueprint("ledger_api", __name__)
 
 
-_run_bill: Optional[RunBill] = None
-_reports: Optional[GenerateReports] = None
-_rebuild_ledger: Optional[RebuildServiceLedger] = None
+_reports: Optional[ServiceClient] = None
+_rebuild_ledger: Optional[ServiceClient] = None
 
-def _services() -> Tuple[GenerateReports, RebuildServiceLedger]:
-    global _run_bill, _reports, _rebuild_ledger
-    if _run_bill is None:
-        _run_bill = RunBill()
-        
+def _services() -> Tuple[ServiceClient, ServiceClient]:
+    global _reports, _rebuild_ledger
     if _reports is None:
-        _reports = GenerateReports(db_manager=_run_bill.db_manager)
+        _reports = ServiceClient("reports")
         
     if _rebuild_ledger is None:
-        _rebuild_ledger = RebuildServiceLedger(db_manager=_run_bill.db_manager)
+        _rebuild_ledger = ServiceClient("ledger")
         
     return _reports, _rebuild_ledger
 

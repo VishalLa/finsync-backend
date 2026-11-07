@@ -13,18 +13,20 @@ from flask_jwt_extended import (
 )
 
 from service.email_service import EmailService
-from service.helper import _log_call
-from service.user_service import UserService
+from service.client import ServiceClient
+
+from shared.logging_utils import log_call as _log_call
+from shared.validation import is_valid_email
 
 app = Blueprint("auth", __name__)
 
 
-_user_service: Optional[UserService] = None
+_user_service: Optional[ServiceClient] = None
 
-def get_user_service() -> Optional[UserService]:
+def get_user_service() -> ServiceClient:
     global _user_service
     if _user_service is None:
-        _user_service = UserService()
+        _user_service = ServiceClient("user")
     return _user_service
 
 
@@ -68,7 +70,7 @@ def register_user():
         }), 400
 
     email = data["email"]
-    if not UserService.validate_email(email):
+    if not is_valid_email(email):
         return jsonify({
             "ok": False,
             "error": "Invalid email address"
@@ -136,7 +138,7 @@ def verify_email():
             "error": "Verification token is required",
         }), 400
 
-    result = get_user_service().verify_email(token)
+    result = get_user_service().verify_email(token=token)
     return jsonify(result), 200 if result["ok"] else 400
 
 
@@ -160,7 +162,7 @@ def logout_user():
 @jwt_required()
 @_log_call
 def current_user():
-    user = get_user_service().get_user(get_jwt_identity())
+    user = get_user_service().get_user(user_id=get_jwt_identity())
     if user is None:
         return jsonify({
             "ok": False, 

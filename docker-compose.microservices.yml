@@ -1,0 +1,278 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-worker: &worker
+  restart: unless-stopped
+  networks: [backend_network]
+  logging: *default-logging
+  stop_grace_period: 120s
+  depends_on:
+    redis_server:
+      condition: service_healthy
+
+services:
+  postgres_db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    env_file: .env
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend_network]
+    logging: *default-logging
+
+  redis_server:
+    image: redis:7-alpine
+    restart: unless-stopped
+    env_file: .env
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend_network]
+    logging: *default-logging
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+    volumes: [ollama_storage:/root/.ollama]
+    networks: [backend_network]
+    logging: *default-logging
+
+  init_uploads:
+    image: busybox
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - mkdir -p /data/uploads && chown 1000:1000 /data/uploads && chmod u+rwx /data/uploads
+    restart: "no"
+    volumes: [bill_uploads:/data/uploads]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    image: latice-service:${TAG:-latest}
+    command: ["python", "manage_db.py"]
+    restart: "no"
+    env_file: .env
+    networks: [backend_network]
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: latice-api:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      STORAGE_DIR: /data/uploads
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: [bill_uploads:/data/uploads]
+    networks: [backend_network]
+    logging: *default-logging
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      init_uploads:
+        condition: service_completed_successfully
+      redis_server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  entry_worker:
+    <<: *worker
+    build:
+      context: .
+      dockerfile: entry_point/Dockerfile
+    image: latice-entry:${TAG:-latest}
+    command:
+      - celery
+      - -A
+      - entry_point.celery_app:celery_app
+      - worker
+      - -Q
+      - entry_point.queue
+      - -n
+      - entry@%h
+      - -c
+      - ${ENTRY_CONCURRENCY:-2}
+      - --max-tasks-per-child=50
+      - --loglevel=info
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      STORAGE_DIR: /data/uploads
+    volumes: [bill_uploads:/data/uploads]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A entry_point.celery_app:celery_app inspect ping -d \"entry@$$HOSTNAME\" -t 10 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  matcher_worker:
+    <<: *worker
+    build:
+      context: .
+      dockerfile: matcher/Dockerfile
+    image: latice-matcher:${TAG:-latest}
+    command:
+      - celery
+      - -A
+      - matcher.celery_app:celery_app
+      - worker
+      - -Q
+      - matcher.queue
+      - -n
+      - matcher@%h
+      - -c
+      - ${MATCHER_CONCURRENCY:-2}
+      - --max-tasks-per-child=50
+      - --loglevel=info
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      STORAGE_DIR: /data/uploads
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_NAME: ${OLLAMA_NAME:-phi3:latest}
+    volumes: [bill_uploads:/data/uploads]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A matcher.celery_app:celery_app inspect ping -d \"matcher@$$HOSTNAME\" -t 10 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  service_worker:
+    <<: *worker
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    image: latice-service:${TAG:-latest}
+    command:
+      - celery
+      - -A
+      - service.celery_app:celery_app
+      - worker
+      - -Q
+      - service.queue,db_storage.queue
+      - -n
+      - service@%h
+      - -c
+      - ${SERVICE_CONCURRENCY:-2}
+      - --max-tasks-per-child=50
+      - --loglevel=info
+    environment:
+      STORAGE_DIR: /data/uploads
+    env_file: .env
+    volumes: [bill_uploads:/data/uploads]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A service.celery_app:celery_app inspect ping -d \"service@$$HOSTNAME\" -t 10 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  legacy_worker:
+    <<: *worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: latice-backend:${TAG:-latest}
+    command:
+      - celery
+      - -A
+      - app.celery
+      - worker
+      - -Q
+      - ai.queue,ledger.queue,report.queue
+      - -n
+      - legacy@%h
+      - -c
+      - ${CELERY_CONCURRENCY:-2}
+      - --max-tasks-per-child=50
+      - --loglevel=info
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      STORAGE_DIR: /data/uploads
+    volumes:
+      - bill_uploads:/data/uploads
+      - ocr_models:/home/appuser/.paddleocr
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis_server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery inspect ping -d \"legacy@$$HOSTNAME\" -t 10 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  ocr_worker:
+    <<: *worker
+    profiles: ["next"]
+    build:
+      context: .
+      dockerfile: entry_point/Dockerfile.ocr
+    image: latice-ocr:${TAG:-latest}
+    command:
+      - celery
+      - -A
+      - entry_point.ocr_celery_app:celery_app
+      - worker
+      - -Q
+      - ocr.queue
+      - -n
+      - ocr@%h
+      - -c
+      - ${OCR_CONCURRENCY:-1}
+      - --max-tasks-per-child=20
+      - --loglevel=info
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      STORAGE_DIR: /data/uploads
+    volumes:
+      - bill_uploads:/data/uploads
+      - ocr_models:/home/appuser/.paddleocr
+    # This profile stays opt-in; OCR task code is still part of the legacy pipeline.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A entry_point.ocr_celery_app:celery_app inspect ping -d \"ocr@$$HOSTNAME\" -t 10 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_storage:
+  bill_uploads:
+  ocr_models:
+
+networks:
+  backend_network:
+    driver: bridge
+    name: backend_network

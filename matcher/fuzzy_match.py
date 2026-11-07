@@ -272,8 +272,8 @@ class FuzzyMatcher:
             match, audit = build()
             self.fuzzy_matches.append(match)
             
-            if audit is None:
-                self.audit_investigation_items.append(audit)     
+            if audit is not None:
+                self.audit_investigation_items.append(audit)
                 
     def _rebuild_pools(
         self,

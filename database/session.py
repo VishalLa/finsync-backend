@@ -272,8 +272,33 @@ class DatabaseManager:
                     self._migrate_legacy_sessions_table()
             self._migrate_ledger_format_run_uniqueness()
             Base.metadata.create_all(engine)
+            self._migrate_run_scoped_reconciliation_auxiliary_rows()
 
         self.execute_raw(_init)
+
+    def _migrate_run_scoped_reconciliation_auxiliary_rows(self) -> None:
+        """Associate ignored and audit rows with their reconciliation run."""
+        inspector = inspect(self.engine)
+        quote = self.engine.dialect.identifier_preparer.quote
+        tables = ("ignored_metadata_record", "audit_investigation_item")
+
+        with self.engine.begin() as connection:
+            for table_name in tables:
+                if not inspector.has_table(table_name):
+                    continue
+                columns = {
+                    column["name"]
+                    for column in inspect(connection).get_columns(table_name)
+                }
+                if "run_id" in columns:
+                    continue
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {quote(table_name)} "
+                        f"ADD COLUMN {quote('run_id')} VARCHAR(36) "
+                        f"REFERENCES {quote('reconciliation_run')} ({quote('id')})"
+                    )
+                )
 
     def _migrate_ledger_format_run_uniqueness(self) -> None:
         """Scope ledger ID uniqueness to a reconciliation run."""

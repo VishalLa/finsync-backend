@@ -10,6 +10,8 @@ T_MATCHER_RUN = "matcher.run"
 T_LEDGER_POST = "ledger.post_run"
 T_SERVICE_SAVE = "service.save_results"
 T_REPORT_BUILD = "report.build"
+T_DB_STORE_INPUTS = "db.store_inputs"
+T_DB_STORE_RESULTS = "db.store_results"
 
 
 class BadMessage(ValueError):
@@ -61,11 +63,11 @@ class OcrExtractMsg(_Msg):
 
 @dataclass
 class MatcherRunMsg(_Msg):
-    """Entry Point -> matcher.queue: normalized parquet files are ready."""
+    """Entry Point -> matcher.queue: normalized record files are ready."""
     run_id: str
     user_id: str
-    ledger_ref: str  # runs/<run_id>/norm/ledger.parquet
-    bank_ref: str    # runs/<run_id>/norm/bank.parquet
+    ledger_ref: str  # runs/<run_id>/norm/ledger.json
+    bank_ref: str    # runs/<run_id>/norm/bank.json
     bank_name: str = "UNKNOWN"
     template_version: str = "v1"
     options: dict = field(default_factory=dict)  # JSON-safe flags only
@@ -77,7 +79,7 @@ class LedgerPostMsg(_Msg):
     """Entry Point -> ledger.queue: bills are extracted, post journal entries."""
     run_id: str
     user_id: str
-    bills_ref: str  # runs/<run_id>/norm/bills.parquet
+    bills_ref: str  # runs/<run_id>/norm/bills.json
     schema_version: int = SCHEMA_VERSION
 
 
@@ -88,6 +90,26 @@ class ServiceSaveMsg(_Msg):
     user_id: str
     result_ref: str  # runs/<run_id>/results/matcher_result.json
     source: str = "matcher"
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass
+class DBPersistInputsMsg(_Msg):
+    """Entry Point -> DB writer: normalized records are ready to persist."""
+    run_id: str
+    user_id: str
+    ledger_ref: str
+    bank_ref: str
+    metadata_ref: str
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass
+class DBPersistResultsMsg(_Msg):
+    """Service -> DB writer: matcher results are ready to persist."""
+    run_id: str
+    user_id: str
+    result_ref: str
     schema_version: int = SCHEMA_VERSION
 
 

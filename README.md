@@ -38,6 +38,19 @@ Flask API (`api/`)
 Optional local services: PaddleOCR processes uploaded bills; Ollama is used by the AI matching stage.
 ```
 
+For bank reconciliation, the queued stages are currently:
+
+```text
+API upload
+  -> entry.process_run       parse ledger and bank files
+  -> db.store_inputs         create the run and persist parsed rows
+  -> matcher.run             reconcile the normalized rows
+  -> service.save_results    build the reconciliation workbook
+  -> db.store_results        persist matches, audit rows, and final status
+```
+
+Queue messages contain the run/user IDs and references under `STORAGE_DIR/runs/<run_id>/`; raw files and normalized/results JSON stay in shared storage rather than being sent through Redis. The database-input stage intentionally finishes before matching starts so match rows can reference persisted ledger and bank rows. Compose runs dedicated consumers for the new stages and retains a worker for existing tasks. All consumers must share the same storage volume; use shared object storage before placing workers on separate hosts.
+
 ## Requirements
 
 - Python `>=3.10,<3.13` (the Docker image uses Python 3.11)
@@ -112,14 +125,20 @@ source .venv/bin/activate
 pip install -r req.txt
 
 # Start PostgreSQL and Redis, then configure .env as above.
+python manage_db.py
 python main.py
 ```
 
 In another terminal, with the same virtual environment and configuration:
 
 ```bash
-celery -A app.celery worker --loglevel=info
+celery -A app.celery worker --loglevel=info --queues=entry_point.queue
+celery -A app.celery worker --loglevel=info --queues=matcher.queue
+celery -A app.celery worker --loglevel=info --queues=service.queue
+celery -A app.celery worker --loglevel=info --queues=db_storage.queue
 ```
+
+Run the existing default-queue worker separately for bills and other legacy tasks. `manage_db.py` applies the additive run association columns used for per-run ignored/audit records.
 
 The Flask development server listens on `http://localhost:8000`.
 

@@ -14,10 +14,17 @@ class Base:
         if db_manager:
             self.db_manager = db_manager
         else:
+            database_url = (
+                self.config.SQLALCHEMY_SYNC_DATABASE_URI
+                or self.config.DATABASE_URL
+            )
+            if not database_url:
+                raise ValueError("Database URL is not configured")
+            
             self.db_manager = DatabaseManager(
-                db_url=self.config.DATABASE_URL,
+                db_url=database_url,
                 echo=True,
-                pool_workers=self.config.POOL_WORKERS,
+                pool_workers=self.config.POOL_WORKERS or 1,
             )
     
     @property

@@ -50,7 +50,7 @@ class LedgerFormatModel(Base):
     reference_id: Mapped[Optional[str]] = mapped_column(String(128))
 
     parse_warnings: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
-    run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reconciliation_run.id"))
+    run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("reconciliation_run.id"))
 
     source: Mapped[LedgerSource] = mapped_column(
         SAEnum(LedgerSource, values_callable=lambda e: [m.value for m in e]),
@@ -129,7 +129,7 @@ class BankStatementModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     run: Mapped[Optional["ReconciliationRunModel"]] = relationship(back_populates="bank_statements")
     match_results: Mapped[List["MatchResultModel"]] = relationship(back_populates="bank_statement")
-    run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reconciliation_run.id"))
+    run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("reconciliation_run.id"))
 
 
 class ReconciliationRunModel(Base):
@@ -171,7 +171,7 @@ class MatchResultModel(Base):
     __tablename__ = "match_result"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[int] = mapped_column(ForeignKey("reconciliation_run.id"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("reconciliation_run.id"), nullable=False)
 
     ledger_format_id: Mapped[Optional[int]] = mapped_column(ForeignKey("ledger_format.id"))
     bank_statement_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bank_statement.id"))
@@ -213,6 +213,10 @@ class IgnoredMetadataRecordModel(Base):
         String(255),
         nullable=False,
         default="Zero-amount metadata / header row — excluded from reconciliation.",
+    )
+    run_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("reconciliation_run.id"),
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -265,6 +269,10 @@ class AuditInvestigationItemModel(Base):
         String(255),
         nullable=False,
         default="Bank Reversal detected; requires manual General Ledger journal entry.",
+    )
+    run_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("reconciliation_run.id"),
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

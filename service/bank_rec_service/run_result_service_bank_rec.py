@@ -4,6 +4,7 @@ import os
 import re
 import dataclasses
 import logging
+import shutil
 
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,6 +19,8 @@ from database import (
     LedgerFormatModel,
     BankStatementModel,
     MatchResultModel,
+    IgnoredMetadataRecordModel,
+    AuditInvestigationItemModel,
     JournalEntryModel,
 )
 from schema import (
@@ -305,6 +308,12 @@ class ResultBankRec:
             for item in bank_objs
             if str(item.row_index) not in matched_bank_ids
         ]
+        ignored_records = session.query(IgnoredMetadataRecordModel).filter_by(
+            run_id=run.id
+        ).all()
+        audit_items = session.query(AuditInvestigationItemModel).filter_by(
+            run_id=run.id
+        ).all()
         
         recon_result: Dict[str, Any] = {
             "summary": {
@@ -331,6 +340,26 @@ class ResultBankRec:
             "RESIDUAL_TIMING_MATCHES": [m for m in matches if m.get("match_type") == "residual_timing"],
             "RESIDUAL_SPLIT_MATCHES": [m for m in matches if m.get("match_type") == "residual_split"],
             "SUGGESTED_JOURNAL_ENTRIES": ResultBankRec._build_suggested_journal_entries(matches),
+            "IGNORED_METADATA": [
+                {
+                    "source": item.source,
+                    "row_ref": item.row_ref,
+                    "narration": item.narration,
+                    "reason": item.reason,
+                }
+                for item in ignored_records
+            ],
+            "AUDIT_INVESTIGATION": [
+                {
+                    "bank_row_index": item.bank_row_index,
+                    "narration": item.narration,
+                    "amount": item.amount,
+                    "direction": item.direction,
+                    "flag_reason": item.flag_reason,
+                    "action_required": item.action_required,
+                }
+                for item in audit_items
+            ],
             "UNRECONCILED_ITEMS": {
                 "ledger": unreconciled_gl_objs,
                 "bank": unreconciled_bank_objs,
@@ -702,8 +731,15 @@ class ResultBankRec:
                 {JournalEntryModel.source_reconciliation_run_id: None},
                 synchronize_session=False,
             )
+            
             session.query(MatchResultModel).filter(
                 MatchResultModel.run_id == run.id
+            ).delete(synchronize_session=False)
+            session.query(IgnoredMetadataRecordModel).filter(
+                IgnoredMetadataRecordModel.run_id == run.id
+            ).delete(synchronize_session=False)
+            session.query(AuditInvestigationItemModel).filter(
+                AuditInvestigationItemModel.run_id == run.id
             ).delete(synchronize_session=False)
             session.query(BankStatementModel).filter(
                 BankStatementModel.run_id == run.id
@@ -730,9 +766,26 @@ class ResultBankRec:
                 ):
                     files_to_remove.append(resolved)
 
+            runs_root = os.path.realpath(os.path.join(storage_root, "runs"))
+            run_directory = os.path.realpath(os.path.join(runs_root, public_id))
+            run_directory_is_referenced = any(
+                os.path.commonpath((run_directory, stored_path)) == run_directory
+                for stored_path in other_run_paths
+            )
+            directories_to_remove = (
+                [run_directory]
+                if (
+                    re.fullmatch(r"[A-Za-z0-9_-]{1,64}", public_id)
+                    and os.path.dirname(run_directory) == runs_root
+                    and not run_directory_is_referenced
+                )
+                else []
+            )
+
             return {
                 "deleted": True,
                 "files_to_remove": files_to_remove,
+                "directories_to_remove": directories_to_remove,
             }
 
         result = self.db_manager.run(_op)
@@ -746,6 +799,14 @@ class ResultBankRec:
                     os.remove(path)
             except OSError:
                 logger.exception("Run data was deleted, but associated file cleanup failed: %s", path)
+                cleanup_warnings.append(os.path.basename(path))
+
+        for path in result.pop("directories_to_remove", []):
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+            except OSError:
+                logger.exception("Run data was deleted, but run folder cleanup failed: %s", path)
                 cleanup_warnings.append(os.path.basename(path))
 
         result["cleanup_warnings"] = cleanup_warnings

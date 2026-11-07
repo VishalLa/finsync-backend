@@ -96,6 +96,7 @@ services:
       celery -A app.celery worker
       --loglevel=info
       --concurrency=${CELERY_CONCURRENCY:-2}
+      --queues=celery,ocr.queue,ai.queue,ledger.queue,report.queue
       --max-tasks-per-child=50
     volumes:
       - bill_uploads:/data/uploads      # must be the SAME volume as backend
@@ -109,6 +110,84 @@ services:
         condition: service_healthy
       ollama:
         condition: service_started
+    stop_grace_period: 120s
+
+  entry_worker:
+    <<: *app
+    command: >
+      celery -A app.celery worker
+      --loglevel=info
+      --queues=entry_point.queue
+      --concurrency=${CELERY_CONCURRENCY:-2}
+      --max-tasks-per-child=50
+    volumes:
+      - bill_uploads:/data/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      init_uploads:
+        condition: service_completed_successfully
+      redis_server:
+        condition: service_healthy
+    stop_grace_period: 120s
+
+  matcher_worker:
+    <<: *app
+    command: >
+      celery -A app.celery worker
+      --loglevel=info
+      --queues=matcher.queue
+      --concurrency=${CELERY_CONCURRENCY:-2}
+      --max-tasks-per-child=50
+    volumes:
+      - bill_uploads:/data/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      init_uploads:
+        condition: service_completed_successfully
+      redis_server:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    stop_grace_period: 120s
+
+  service_worker:
+    <<: *app
+    command: >
+      celery -A app.celery worker
+      --loglevel=info
+      --queues=service.queue
+      --concurrency=${CELERY_CONCURRENCY:-2}
+      --max-tasks-per-child=50
+    volumes:
+      - bill_uploads:/data/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      init_uploads:
+        condition: service_completed_successfully
+      redis_server:
+        condition: service_healthy
+    stop_grace_period: 120s
+
+  db_worker:
+    <<: *app
+    command: >
+      celery -A app.celery worker
+      --loglevel=info
+      --queues=db_storage.queue
+      --concurrency=${CELERY_CONCURRENCY:-2}
+      --max-tasks-per-child=50
+    volumes:
+      - bill_uploads:/data/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      init_uploads:
+        condition: service_completed_successfully
+      redis_server:
+        condition: service_healthy
     stop_grace_period: 120s
 
 volumes:

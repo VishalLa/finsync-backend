@@ -29,6 +29,10 @@ def create_celery(
         "tasks.bill_pipeline",
         "tasks.full_run",
         "tasks.generate_report_tasks",
+        "tasks.entry_point",
+        "tasks.matcher",
+        "tasks.service",
+        "tasks.db_storage",
     ]
     
     app = Celery(
@@ -43,10 +47,12 @@ def create_celery(
         Queue("celery"),
         *(Queue(route["queue"]) for route in TASK_ROUTES.values())
     )
+    app.conf.task_routes = TASK_ROUTES
     app.conf.task_default_queue = "celery"
     app.conf.worker_prefetch_multiplier = 1
     app.conf.broker_transport_options = {"visibility_timeout": 7200}
 
     app.conf.broker_connection_retry_on_startup = True
+    return app
 
 celery_app = create_celery(config=Config.from_env())

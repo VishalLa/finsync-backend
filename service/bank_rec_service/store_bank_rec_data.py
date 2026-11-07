@@ -54,7 +54,7 @@ class PushBankRecData:
     @staticmethod
     def _bank_statement_payload(
         data: Dict[str, Any], 
-        run_id: Optional[int]
+        run_id: Optional[str]
     ) -> Dict[str, Any]:
         """Translate parsed schema field names to the database column names."""
         payload = _coerce_row_dates(data, ["date"])
@@ -100,7 +100,7 @@ class PushBankRecData:
     @_log_db_errors("updating run summary")
     def update_run_summary(
         self, 
-        run_id: int, 
+        run_id: str, 
         summary: Dict[str, Any]
     ) -> bool:
         
@@ -133,7 +133,7 @@ class PushBankRecData:
     def push_bank_statements(
         self, 
         statements_data: List[Dict[str, Any]], 
-        run_id: Optional[int] = None
+        run_id: Optional[str] = None
     ) -> bool:
 
         def _op(session: Session) -> bool:
@@ -151,7 +151,7 @@ class PushBankRecData:
     def push_ledgers(
         self, 
         ledgers_data: List[Dict[str, Any]], 
-        run_id: Optional[int] = None
+        run_id: Optional[str] = None
     ) -> bool:
         
         def _op(session: Session) -> bool:
@@ -175,7 +175,7 @@ class PushBankRecData:
         self,
         statements_data: List[Dict[str, Any]],
         ledgers_data: List[Dict[str, Any]],
-        run_id: Optional[int] = None,
+        run_id: Optional[str] = None,
     ) -> bool:
         
         def _op(session: Session) -> bool:
@@ -195,6 +195,83 @@ class PushBankRecData:
             session.add_all(db_statements)
             session.add_all(db_ledgers)
             return True
+
+        return self.db_manager.run(_op)
+
+    @_log_db_errors("persisting reconciliation inputs")
+    def persist_run_inputs(
+        self,
+        celery_task_id: str,
+        user_id: str,
+        run_name: Optional[str],
+        bank_name: Optional[str],
+        template_version: Optional[str],
+        ledger_source: Optional[str],
+        bank_csv_path: str,
+        ledger_csv_path: str,
+        statements_data: List[Dict[str, Any]],
+        ledgers_data: List[Dict[str, Any]],
+    ) -> str:
+        """Create a run and its parsed inputs atomically and idempotently."""
+        def _op(session: Session) -> str:
+            existing = session.query(ReconciliationRunModel).filter_by(
+                celery_task_id=celery_task_id
+            ).one_or_none()
+            if existing is not None:
+                if existing.user_id != user_id:
+                    raise ValueError("Reconciliation run owner does not match")
+                
+                stored_bank_count = session.query(BankStatementModel).filter_by(
+                    run_id=existing.id
+                ).count()
+                stored_ledger_count = session.query(LedgerFormatModel).filter_by(
+                    run_id=existing.id
+                ).count()
+                
+                if (
+                    stored_bank_count != len(statements_data)
+                    or stored_ledger_count != len(ledgers_data)
+                ):
+                    raise RuntimeError(
+                        f"Run {celery_task_id} exists with incomplete input records"
+                    )
+                
+                return existing.id
+
+            run = ReconciliationRunModel(
+                celery_task_id=celery_task_id,
+                name=run_name,
+                user_id=user_id,
+                bank_name=bank_name,
+                template_version=template_version,
+                ledger_source=ledger_source,
+                bank_csv_path=bank_csv_path,
+                ledger_csv_path=ledger_csv_path,
+                ledger_records=len(ledgers_data),
+                bank_records=len(statements_data),
+                status="processing",
+            )
+            session.add(run)
+            session.flush()
+
+            session.add_all([
+                BankStatementModel(**self._bank_statement_payload(item, run.id))
+                for item in statements_data
+            ])
+
+            ledger_rows = []
+            for item in ledgers_data:
+                data = dict(item)
+                source = data.get("source")
+                
+                if isinstance(source, str):
+                    data["source"] = LedgerSource(source)
+                    
+                data = _coerce_row_dates(data, ["transaction_date"])
+                ledger_rows.append(LedgerFormatModel(**{**data, "run_id": run.id}))
+                
+            session.add_all(ledger_rows)
+            return run.id
 
         return self.db_manager.run(_op)
 
@@ -219,11 +296,12 @@ class PushBankRecData:
     @_log_db_errors("inserting match result rows")
     def push_match_result_rows(
         self,
-        run_id: int,
+        run_id: str,
         timing_matches: Optional[List[Dict[str, Any]]] = None,
         split_matches: Optional[List[Dict[str, Any]]] = None,
         suggested_journal_entries: Optional[List[Dict[str, Any]]] = None,
         other_matches: Optional[List[Dict[str, Any]]] = None,
+        replace_existing: bool = False,
     ) -> bool:
         timing_matches = timing_matches or []
         split_matches = split_matches or []
@@ -231,9 +309,15 @@ class PushBankRecData:
         other_matches = other_matches or []
         
         if not (timing_matches or split_matches or suggested_journal_entries or other_matches):
-            return True
+            if not replace_existing:
+                return True
 
         def _op(session: Session) -> bool:
+            if replace_existing:
+                session.query(MatchResultModel).filter_by(run_id=run_id).delete(
+                    synchronize_session=False
+                )
+
             ledger_lookup: Dict[str, int] = {
                 ledger_id: pk
                 for pk, ledger_id in session.query(
@@ -409,12 +493,18 @@ class PushBankRecData:
     @_log_db_errors("inserting ignored records")
     def push_ignored_records(
         self, 
-        ignored_data: List[Dict[str, Any]]
+        ignored_data: List[Dict[str, Any]],
+        run_id: Optional[str] = None,
     ) -> bool:
 
         def _op(session: Session) -> bool:
+            if run_id is not None:
+                session.query(IgnoredMetadataRecordModel).filter_by(
+                    run_id=run_id
+                ).delete(synchronize_session=False)
+                
             db_ignored = [
-                IgnoredMetadataRecordModel(**data) 
+                IgnoredMetadataRecordModel(**{**data, "run_id": run_id})
                 for data in ignored_data
             ]
             session.add_all(db_ignored)
@@ -426,11 +516,16 @@ class PushBankRecData:
     @_log_db_errors("inserting audit items")
     def push_audit_items(
         self, 
-        audit_data: List[Dict[str, Any]]
+        audit_data: List[Dict[str, Any]],
+        run_id: Optional[str] = None,
     ) -> bool:
         def _op(session: Session) -> bool:
+            if run_id is not None:
+                session.query(AuditInvestigationItemModel).filter_by(
+                    run_id=run_id
+                ).delete(synchronize_session=False)
             db_audit_items = [
-                AuditInvestigationItemModel(**data) 
+                AuditInvestigationItemModel(**{**data, "run_id": run_id})
                 for data in audit_data
             ]
             session.add_all(db_audit_items)

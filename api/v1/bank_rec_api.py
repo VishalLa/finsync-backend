@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-import os
 import uuid
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Any, Optional, Tuple
 
-from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
 from app.celery import celery_app
-from core.config import Config
 from service import ResultBankRec, RunBankRec, RecJournalPosting, _log_call
-from tasks.bank_rec import run_reconciliation_pipeline
 from tasks.generate_report_tasks import generate_report_bank_rec
+
+from shared.message import EntryProcessMsg, T_ENTRY_PROCESS
+from shared.status import get_status, set_status
+from shared.storage import resolve, run_ref, save_stream
 
 
 app = Blueprint("bank_rec_api", __name__)
@@ -61,30 +62,58 @@ def start_reconciliation():
             "error": "Only CSV and XLSX files are supported"
         }), 400
 
-    config = Config.from_env()
-    run_token = uuid.uuid4().hex[:12]
-    
-    ledger_path = os.path.join(
-        config.STORAGE_DIR, 
-        f"{run_token}_{secure_filename(ledger_file.filename)}"
+    run_id = uuid.uuid4().hex
+    user_id = str(get_jwt_identity())
+    ledger_extension = Path(secure_filename(ledger_file.filename)).suffix.lower()
+    bank_extension = Path(secure_filename(bank_file.filename)).suffix.lower()
+    ledger_ref = run_ref(run_id, "raw", f"ledger{ledger_extension}")
+    bank_ref = run_ref(run_id, "raw", f"bank{bank_extension}")
+    message = EntryProcessMsg(
+        run_id=run_id,
+        user_id=user_id,
+        ledger_ref=ledger_ref,
+        bank_ref=bank_ref,
+        options={"run_name": run_name},
     )
-    bank_path = os.path.join(
-        config.STORAGE_DIR, 
-        f"{run_token}_{secure_filename(bank_file.filename)}"
-    )
     
-    ledger_file.save(ledger_path)
-    bank_file.save(bank_path)
+    try:
+        save_stream(
+            ref=ledger_ref, 
+            fileobj=ledger_file.stream
+        )
+        save_stream(
+            ref=bank_ref, 
+            fileobj=bank_file.stream
+        )
+        set_status(
+            run_id=run_id, 
+            stage="entry", 
+            state="queued", 
+            user_id=user_id
+        )
+        celery_app.send_task(
+            T_ENTRY_PROCESS,
+            args=[message.to_dict()],
+            task_id=run_id,
+        )
+    except Exception:
+        resolve(ledger_ref).unlink(missing_ok=True)
+        resolve(bank_ref).unlink(missing_ok=True)
+        set_status(
+            run_id=run_id,
+            stage="entry",
+            state="failed",
+            error="Could not submit reconciliation to the worker queue",
+            user_id=user_id,
+        )
+        raise
 
-    task = run_reconciliation_pipeline.apply_async(
-        args=[ledger_path, bank_path, run_name, str(get_jwt_identity())]
-    )
     return jsonify({
         "ok": True,
-        "run_id": task.id,
-        "task_id": task.id,
+        "run_id": run_id,
+        "task_id": run_id,
         "run_name": run_name,
-        "status_url": f"/api/bank-rec/reconciliation/{task.id}/status",
+        "status_url": f"/api/bank-rec/reconciliation/{run_id}/status",
     }), 202
 
 
@@ -92,14 +121,70 @@ def start_reconciliation():
 @jwt_required()
 @_log_call
 def run_status(run_id: str):
-    task = AsyncResult(run_id, app=celery_app)
-    payload = {"run_id": run_id, "state": task.state}
+    user_id = str(get_jwt_identity())
+    status_data = get_status(run_id)
+    owner_id = status_data.get("user_id")
     
-    if task.state == "SUCCESS":
-        payload["result"] = task.result
-    elif task.state == "FAILURE":
-        payload["error"] = str(task.result)
+    if owner_id is not None and owner_id != user_id:
+        return jsonify({
+            "ok": False, 
+            "error": "Run not found"
+        }), 404
+
+    stages = status_data.get("stages", {})
+    if owner_id is None:
+        _, result_service, _ = _services()
+        result = result_service.get_run_for_user(
+            run_id=run_id,
+            user_id=user_id,
+            include_records=False,
+        )
+        if result is None:
+            return jsonify({
+                "ok": False, 
+                "error": "Run not found"
+            }), 404
+        
+        return jsonify(result), 200
+
+    if any(stage.get("state") == "failed" for stage in stages.values()):
+        state = "FAILURE"
+    elif all(
+        stages.get(stage, {}).get("state") == "done"
+        for stage in ("entry", "inputs", "matcher", "service", "results")
+    ):
+        state = "SUCCESS"
+    elif any(stage.get("state") == "running" for stage in stages.values()):
+        state = "STARTED"   
+    else:
+        state = "PENDING"
+
+    payload: dict[str, Any] = {
+        "run_id": run_id, 
+        "state": state, 
+        "stages": stages
+    }
     
+    if state == "FAILURE":
+        payload["error"] = next(
+            (
+                stage.get("error")
+                for stage in stages.values()
+                if stage.get("state") == "failed"
+            ),
+            "Reconciliation failed",
+        )
+    elif state == "SUCCESS":
+        _, result_service, _ = _services()
+        result = result_service.get_run_for_user(
+            run_id=run_id,
+            user_id=user_id,
+            include_records=False,
+        )
+        if result is None:
+            return jsonify({"ok": False, "error": "Run not found"}), 404
+        payload["result"] = result
+
     return jsonify(payload), 200
 
 

@@ -33,10 +33,13 @@ def resolve(ref: str) -> Path:
     """Turn a ref into a real path, refusing anything outside STORAGE_DIR."""
     if not ref or ref.startswith(("/", "\\")) or ".." in Path(ref).parts:
         raise ValueError(f"unsafe ref: {ref!r}")
+    
     base = storage_dir()
     path = (base / ref).resolve()
+    
     if base not in path.parents:
         raise ValueError(f"ref escapes storage: {ref!r}")
+    
     return path
 
 
@@ -46,6 +49,7 @@ def _atomic_write(ref: str, writer) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     os.close(fd)
+    
     try:
         writer(tmp)
         os.replace(tmp, path)

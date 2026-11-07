@@ -58,7 +58,7 @@ class JournalEntryModel(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
     bill_id: Mapped[Optional[str]] = mapped_column(ForeignKey("bill.id"))
 
-    source_reconciliation_run_id: Mapped[Optional[int]] = mapped_column(
+    source_reconciliation_run_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("reconciliation_run.id")
     )
 

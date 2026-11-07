@@ -3,25 +3,61 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, Tuple
+from typing import Dict, List, Optional, Protocol, Tuple, Set
 
 from schema import RecognizedPattern
 
+from .helper import _STOPWORDS, _INDIAN_PREFIX_RE
+
+_VPA_RE = re.compile(r"@[a-z0-9.\-]+", re.I)
 _WHITESPACE_RE = re.compile(r"\s+")
 _NON_ALNUM_RE  = re.compile(r"[^a-z0-9 ]+")
 
+_SIGNATURE_NOISE = set(_STOPWORDS) | {
+    "pvt", "private", "limited", "india", "indian", "ltd", "llp",
+    "pay", "paid", "payu", "paytm", "phonepe", "gpay", "bhim", "ybl", "ibl",
+    "okicici", "okhdfcbank", "oksbi", "okaxis", "axl", "apl",
+    "bank", "branch", "clg", "chq", "cheque", "cash",
+    "by", "to", "from", "via", "for", "of", "and",
+}
 
-def _normalize_signature(text: Optional[str]) -> str:
+_MIN_TOKEN_LEN = 2
+_MIN_CORE_LEN = 3
+
+
+def _signature_tokens(text: Optional[str]) -> List[str]:
     if not text:
-        return ""
-    t = text.lower()
+        return []
+    
+    t = str(text).lower()
+    t = _VPA_RE.sub(" ", t)
+    t = _INDIAN_PREFIX_RE.sub(" ", t)
     t = _NON_ALNUM_RE.sub(" ", t)
     t = _WHITESPACE_RE.sub(" ", t).strip()
-    return t
+    
+    tokens: Set[str] = set()
+    for tok in t.split():
+        if any(ch.isdigit() for ch in tok):
+            continue
+        if len(tok) < _MIN_TOKEN_LEN or tok in _SIGNATURE_NOISE:
+            continue
+        tokens.add(tok)
+    return sorted(tokens)
+
+
+def _normalize_signature(text: Optional[str]) -> str:
+    tokens = _signature_tokens(text)
+    if not any(len(tok) >= _MIN_CORE_LEN for tok in tokens):
+        return ""
+    return " ".join(tokens)
 
 
 def _pattern_key(ledger_sig: str, bank_sig: str) -> str:
     return f"{ledger_sig}::{bank_sig}"
+
+
+def _has_core(tokens: Set[str]) -> bool:
+    return any(len(t) >= _MIN_CORE_LEN for t in tokens)
 
 
 class MemoryBackend(Protocol):
@@ -30,7 +66,7 @@ class MemoryBackend(Protocol):
 
 
 class JSONFileBackend:
-    def __init__(self, path: str):
+    def __init__(self, path: str) -> None:
         self.path = Path(path)
 
     def load(self) -> Dict[str, dict]:
@@ -50,7 +86,7 @@ class JSONFileBackend:
 
 class InMemoryBackend:
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._data: Dict[str, dict] = {}
 
     def load(self) -> Dict[str, dict]:
@@ -62,7 +98,12 @@ class InMemoryBackend:
 
 class SQLAlchemyBackend:
 
-    def __init__(self, session_factory, model_cls=None):
+    from sqlalchemy.orm import Session
+    def __init__(
+        self, 
+        session_factory: Session, 
+        model_cls=None
+    ) -> None:
         self._session_factory = session_factory
         self._model_cls = model_cls
 
@@ -125,20 +166,70 @@ class SQLAlchemyBackend:
 
 
 class MatchMemory:
-    def __init__(self, backend: Optional[MemoryBackend] = None):
+    def __init__(
+        self, 
+        backend: Optional[MemoryBackend] = None
+    ) -> None:
         self.backend = backend or InMemoryBackend()
-        self._patterns: Dict[str, RecognizedPattern] = {
-            key: RecognizedPattern.from_dict(d)
-            for key, d in self.backend.load().items()
-        }
+        self._patterns: Dict[str, RecognizedPattern] = {}
+        self._by_ledger: Dict[str, List[RecognizedPattern]] = {}
+        self._index_dirty = True
+        
+        for d in self.backend.load().values():
+            p = RecognizedPattern.from_dict(d)
+            p.ledger_signature = _normalize_signature(p.ledger_signature)
+            p.bank_signature = _normalize_signature(p.bank_signature)
+            
+            if not p.ledger_signature or not p.bank_signature:
+                continue
+            key = _pattern_key(p.ledger_signature, p.bank_signature)
+            existing = self._patterns.get(key)
+            if existing:
+                existing.times_seen += p.times_seen
+            else:
+                self._patterns[key] = p
+    
+    
+    def _ensure_index(self) -> None:
+        if not self._index_dirty:
+            return
+        self._by_ledger = {}
+        for p in self._patterns.values():
+            self._by_ledger.setdefault(p.ledger_signature, []).append(p)
+        self._index_dirty = False
 
-    def is_recognized(self, ledger_text: Optional[str], bank_text: Optional[str]) -> bool:
-        key = _pattern_key(_normalize_signature(ledger_text), _normalize_signature(bank_text))
-        return key in self._patterns
 
-    def lookup(self, ledger_text: Optional[str], bank_text: Optional[str]) -> Optional[RecognizedPattern]:
-        key = _pattern_key(_normalize_signature(ledger_text), _normalize_signature(bank_text))
-        return self._patterns.get(key)
+    def lookup(
+        self, 
+        ledger_text: Optional[str], 
+        bank_text:   Optional[str]
+    ) -> Optional[RecognizedPattern]:
+        ledger_sig = _normalize_signature(ledger_text)
+        bank_tokens = set(_signature_tokens(bank_text))
+        if not ledger_text or not bank_tokens:
+            return None
+        
+        self._ensure_index()
+        best: Optional[RecognizedPattern] = None
+        for p in self._by_ledger.get(ledger_sig, []):
+            sorted = set(p.bank_signature.split())
+            if sorted and sorted <= bank_tokens:
+                if best is None or len(sorted) > len(best.bank_signature.split()):
+                    best = p
+        
+        return best
+    
+    
+    def is_recognized(
+        self,
+        ledger_text: Optional[str],
+        bank_text: Optional[str]
+    ) -> bool:
+        return self.lookup(
+            ledger_text=ledger_text,
+            bank_text=bank_text
+        ) is not None
+
 
     def record_match(
         self,
@@ -148,27 +239,63 @@ class MatchMemory:
         adjustment_type: Optional[str] = None,
     ) -> None:
         ledger_sig = _normalize_signature(ledger_text)
-        bank_sig   = _normalize_signature(bank_text)
-        if not ledger_sig or not bank_sig:
+        bank_tokens = set(_signature_tokens(bank_text))
+        if not ledger_sig or not _has_core(bank_tokens):
             return  # nothing stable to key on
 
-        key = _pattern_key(ledger_sig, bank_sig)
-        existing = self._patterns.get(key)
-        if existing:
-            existing.times_seen += 1
-            existing.match_phase     = match_phase
-            existing.adjustment_type = adjustment_type
-        else:
-            self._patterns[key] = RecognizedPattern(
-                ledger_signature=ledger_sig,
-                bank_signature=bank_sig,
-                match_phase=match_phase,
-                adjustment_type=adjustment_type,
-            )
-
+        self._ensure_index()
+        for p in self._by_ledger.get(ledger_sig, []):
+            stored = set(p.bank_signature.split())
+            common = stored & bank_tokens
+            if not _has_core(common):
+                continue
+            
+            new_sig = " ".join(stored(common))
+            if new_sig != p.bank_signature:
+                self._patterns.pop(
+                    _pattern_key(
+                        ledger_sig=ledger_sig, 
+                        bank_sig=p.bank_signature), 
+                    None
+                )
+                p.bank_signature = new_sig
+                clash = self._patterns.get(
+                    _pattern_key(
+                        ledger_sig=ledger_sig,
+                        bank_sig=new_sig
+                    )
+                )
+                if clash is not None and clash is not p:
+                    clash.times_seen += p.times_seen
+                    p = clash
+                else:
+                    self._patterns[_pattern_key(
+                        ledger_sig=ledger_sig, 
+                        bank_sig=new_sig
+                    )] = p
+                self._index_dirty = True
+            
+            p.times_seen += 1
+            p.match_phase = match_phase
+            p.adjustment_type = adjustment_type
+            return
+        
+        new_p = RecognizedPattern(
+            ledger_signature=ledger_sig,
+            bank_signature=" ".join(sorted(bank_tokens)),
+            match_phase=match_phase,
+            adjustment_type=adjustment_type
+        )
+        self._patterns[_pattern_key(
+            ledger_sig=new_p.ledger_signature,
+            bank_sig=new_p.bank_signature
+        )] = new_p
+        self._index_dirty = True
+        
+        
     def record_matches_from_records(
         self,
-        matches: List[dict],
+        matches:    List[dict],
         gl_by_id:   Dict[str, str],   
         bank_by_id: Dict[str, str],   
         match_phase: str,
@@ -186,6 +313,7 @@ class MatchMemory:
                 adjustment_type=m.get("adjustment_type"),
             )
 
+
     def stats(self) -> dict:
         return {
             "total_patterns": len(self._patterns),
@@ -194,8 +322,11 @@ class MatchMemory:
             ),
         }
 
+
     def save(self) -> None:
-        self.backend.save({k: p.to_dict() for k, p in self._patterns.items()})
+        self.backend.save(
+            {k: p.to_dict() for k, p in self._patterns.items()}
+        )
 
 
 def memory_matcher(
@@ -216,7 +347,7 @@ def memory_matcher(
         except (TypeError, ValueError):
             return 0.0
 
-    for gl in gl_pool:
+    for gl in list(gl_pool):
         gl_debit  = _safe_amt(gl, "debit_amount")
         gl_credit = _safe_amt(gl, "credit_amount")
         account_name = getattr(gl, "account_name", "")

@@ -106,12 +106,12 @@ def reconcile(
     memory_matches: List[dict] = []
 
     if memory is not None and residual_ledger and residual_bank:
-        memory, residual_ledger, residual_bank = memory_matcher(
+        memory_matches, residual_ledger, residual_bank = memory_matcher(
             residual_bank=residual_bank,
             residual_ledger=residual_ledger,
             memory=memory,
             same_side=same_side,
-            amount_tol=TOLERANCES.get("TIMING_DIFFERENCE", 2.0)
+            amount_tol=TOLERANCES.get("TIMING_DIFFERENCE", 2.0),
         )
 
     ai_input_payload = {

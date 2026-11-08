@@ -46,8 +46,8 @@ def _validate_secrets(config: APISettings) -> None:
 
 
 def _configure_cors(app: Flask, debug: bool) -> None:
-    configured_origins = os.environ.get("CORS_ALLOWED_ORIGINS")
-    if configured_origins is None:
+    configured_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+    if not configured_origins:
         return  # CORS stays disabled: same-origin requests only
 
     allowed_origins = [

@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Protocol, Tuple, Set
 
 from schema import RecognizedPattern
 
-from .helper import _STOPWORDS, _INDIAN_PREFIX_RE
+from utils.helper import _STOPWORDS, _INDIAN_PREFIX_RE
 
 _VPA_RE = re.compile(r"@[a-z0-9.\-]+", re.I)
 _WHITESPACE_RE = re.compile(r"\s+")

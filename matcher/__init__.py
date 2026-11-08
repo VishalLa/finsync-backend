@@ -1,12 +1,12 @@
 from typing import List, Optional
 
-from .fuzzy_match import fuzzy_matcher
-from .exact_match import exact_match
-from .ai_matcher import ai_matcher
-from .confidence import annotate_match_confidence
-from .same_side_detect import detect_same_side
-from .memory_match import memory_matcher, MatchMemory
-from .residual_reconciler import reconcile_residuals
+from fuzzy_matcher.fuzzy_match import fuzzy_matcher
+from exact_match import exact_match
+from ai_matcher.ai_matche import ai_matcher
+from utils.confidence import annotate_match_confidence
+from same_side_detect import detect_same_side
+from memory_match import memory_matcher, MatchMemory
+from ai_matcher.residual_reconciler import reconcile_residuals
 
 from shared.settings import Settings
 

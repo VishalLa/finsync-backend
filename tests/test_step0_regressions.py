@@ -10,7 +10,7 @@ import pytest
 
 import matcher
 from matcher import reconcile
-from matcher.fuzzy_match import FuzzyMatcher, _AmountIndex
+from matcher.fuzzy_matcher import FuzzyMatcher, _AmountIndex
 from schema import BankStatement, LedgerFormat
 
 

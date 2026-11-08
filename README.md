@@ -98,7 +98,7 @@ POOL_WORKERS=1
 
 `DATABASE_URL` takes precedence when it is a PostgreSQL URL. A SQLite URL is accepted for local development, but PostgreSQL is the supported database. `STORAGE_DIR` is created automatically and holds uploaded files and generated reports. In containers, the default storage path is `/data/uploads` and the default Ollama host is `ollama`.
 Access tokens are valid for 12 hours. Generated reports are stored under `STORAGE_DIR/reports`, which must be on shared storage mounted by both the API and Celery worker.
-`CORS_ALLOWED_ORIGINS` accepts `*` to allow any origin or a comma-separated list of origins, such as `http://localhost:5173,https://app.example.com`. If unset, cross-origin requests are not enabled.
+`CORS_ALLOWED_ORIGINS` accepts `*` to allow any origin or a comma-separated list of origins, such as `http://localhost:5173,https://bank-rec-frontend.vercel.app`. Set it to the frontend's exact origin (scheme and hostname, no trailing slash) and restart/recreate the API container; an unset or blank value disables cross-origin requests. Docker Compose passes this setting explicitly to the API without exposing database credentials.
 On startup, the backend adds the `email_verified` column to an older `user` table if needed. Existing accounts are marked verified so this schema upgrade does not lock them out.
 Ledger IDs are unique within a reconciliation run, rather than across the entire database. On startup, the backend migrates the older global `ledger_id` constraint for PostgreSQL and SQLite databases.
 

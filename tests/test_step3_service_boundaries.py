@@ -195,3 +195,27 @@ assert not any(
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_api_cors_allows_configured_frontend_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    from flask import Flask
+
+    from app import _configure_cors
+
+    origin = "https://bank-rec-frontend.vercel.app"
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", origin)
+    app = Flask(__name__)
+    _configure_cors(app, debug=False)
+
+    response = app.test_client().options(
+        "/auth/login",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert "POST" in response.headers["Access-Control-Allow-Methods"]
+    assert "authorization" in response.headers["Access-Control-Allow-Headers"].lower()

@@ -100,7 +100,7 @@ def test_residual_drafting_uses_supplied_settings(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from matcher import residual_reconciler
+    from Backend.matcher.ai_matcher import residual_reconciler
     from schema import BankStatement
     from shared.settings import Settings
 

@@ -89,10 +89,27 @@ class AIMatcher:
         unreconciled: Dict[str, Any],
     ) -> Tuple[Dict[str, Any], List[LedgerFormat], List[BankStatement]]:
 
-        gl_remaining: List[LedgerFormat] = list(unreconciled["UNRECONCILED_LEDGER"])
-        bk_remaining: List[BankStatement] = list(unreconciled["UNRECONCILED_BANK"])
+        gl_by_id: Dict[str, LedgerFormat] = {}
+        bk_by_id: Dict[str, BankStatement] = {}
+        
+        for record in unreconciled["UNRECONCILED_LEDGER"]:
+            ledger_id = str(record.ledger_id)
+            if ledger_id in gl_by_id:
+                raise ValueError(f"Duplicate ledger ID in AI matching pool: {ledger_id}")
+            gl_by_id[ledger_id] = record
+            
+        for record in unreconciled["UNRECONCILED_BANK"]:
+            bank_id = str(record.row_index)
+            if bank_id in bk_by_id:
+                raise ValueError(f"Duplicate bank ID in AI matching pool: {bank_id}")
+            bk_by_id[bank_id] = record
+            
+        used_ledger: set[str] = set()
+        used_bank: set[str] = set()
         ai_matches: List[dict] = []
         audit_queue: List[dict] = []
+        gl_remaining = list(gl_by_id.values())
+        bk_remaining = list(bk_by_id.values())
 
         empty = {
             "AI_MATCHES": ai_matches,
@@ -123,7 +140,8 @@ class AIMatcher:
 
             gl_chunk = sorted(
                 (
-                    r for r in gl_remaining
+                    r for ledger_id, r in gl_by_id.items()
+                    if ledger_id not in used_ledger
                     if r.transaction_date
                     and current_start.date()
                     <= datetime.strptime(r.transaction_date[:10], "%Y-%m-%d").date()
@@ -135,7 +153,8 @@ class AIMatcher:
             )
             bk_chunk = sorted(
                 (
-                    r for r in bk_remaining
+                    r for bank_id, r in bk_by_id.items()
+                    if bank_id not in used_bank
                     if r.date
                     and current_start.date()
                     <= datetime.strptime(r.date[:10], "%Y-%m-%d").date()
@@ -171,10 +190,17 @@ class AIMatcher:
 
             if result and hasattr(result, "matches"):
                 for m in result.matches:
-                    gl_item = next((r for r in gl_remaining if r.ledger_id == m.ledger_id), None)
-                    bk_item = next((r for r in bk_remaining if str(r.row_index) == str(m.bank_id)), None)
+                    ledger_id = str(m.ledger_id)
+                    gl_item = gl_by_id.get(ledger_id)
+                    bank_id = str(m.bank_id)
+                    bk_item = bk_by_id.get(bank_id)
 
-                    if not gl_item or not bk_item:
+                    if (
+                        gl_item is None
+                        or bk_item is None
+                        or ledger_id in used_ledger
+                        or bank_id in used_bank
+                    ):
                         print(f" GHOST REFERENCE: Ledger '{m.ledger_id}' or "
                               f"Bank '{m.bank_id}' not found in pools - skipped.")
                         continue
@@ -196,11 +222,19 @@ class AIMatcher:
                         continue
 
                     ai_matches.append(m.model_dump())
-                    gl_remaining = [r for r in gl_remaining if r.ledger_id != m.ledger_id]
-                    bk_remaining = [r for r in bk_remaining if str(r.row_index) != str(m.bank_id)]
+                    used_ledger.add(ledger_id)
+                    used_bank.add(bank_id)
 
             current_start += window_step
 
+        gl_remaining = [
+            record for ledger_id, record in gl_by_id.items()
+            if ledger_id not in used_ledger
+        ]
+        bk_remaining = [
+            record for bank_id, record in bk_by_id.items()
+            if bank_id not in used_bank
+        ]
         return {
             "AI_MATCHES": ai_matches,
             "AUDIT_QUEUE": audit_queue,
@@ -236,7 +270,16 @@ class AIMatcher:
 
         ai_many_matches: List[dict] = []
         audit_queue: List[dict] = []
-        gl_left = list(gl_remaining)
+        gl_by_id: Dict[str, LedgerFormat] = {}
+        
+        for record in gl_remaining:
+            ledger_id = str(record.ledger_id)
+            if ledger_id in gl_by_id:
+                raise ValueError(f"Duplicate ledger ID in AI residual pool: {ledger_id}")
+            gl_by_id[ledger_id] = record
+            
+        used_ledger: set[str] = set()
+        gl_left = list(gl_by_id.values())
 
         if not bk_remaining:
             return {
@@ -247,6 +290,10 @@ class AIMatcher:
         chain = self._RESIDUAL_PROMPT | self.llm
 
         for bank in bk_remaining:
+            gl_left = [
+                record for ledger_id, record in gl_by_id.items()
+                if ledger_id not in used_ledger
+            ]
             candidates = _filter_candidates_for_bank(
                 bank, gl_left,
                 date_window=CANDIDATE_DATE_WINDOW_DAYS,
@@ -274,8 +321,12 @@ class AIMatcher:
                 continue
 
             for m in result.matches:
-                matched_ids = [lid.ledger_id for lid in m.ledger_ids]
-                gl_items = [r for r in gl_left if r.ledger_id in matched_ids]
+                matched_ids = [str(lid.ledger_id) for lid in m.ledger_ids]
+                gl_items = [
+                    gl_by_id[ledger_id]
+                    for ledger_id in matched_ids
+                    if ledger_id in gl_by_id and ledger_id not in used_ledger
+                ]
 
                 if m.confidence < CONFIDENCE_THRESHOLD:
                     audit_queue.append({
@@ -294,9 +345,16 @@ class AIMatcher:
                     continue
 
                 ai_many_matches.append(m.model_dump())
-                gl_left = [r for r in gl_left if r.ledger_id not in matched_ids]
+                used_ledger.update(matched_ids)
 
-        return {"AI_MANY_MATCHES": ai_many_matches, "AUDIT_QUEUE": audit_queue}, gl_left
+        gl_left = [
+            record for ledger_id, record in gl_by_id.items()
+            if ledger_id not in used_ledger
+        ]
+        return {
+            "AI_MANY_MATCHES": ai_many_matches, 
+            "AUDIT_QUEUE": audit_queue
+        }, gl_left
 
 
     # Orchestration
@@ -337,7 +395,11 @@ class AIMatcher:
             batch_res, gl_rem, bk_rem = self.batch_match(result)
         except Exception as e:
             print(f" AI Batch Matcher crashed: {e}. Falling through to residual matcher.")
-            batch_res = {"AI_MATCHES": [], "AUDIT_QUEUE": [], "MATCHED": result.get("MATCHED", [])}
+            batch_res = {
+                "AI_MATCHES": [], 
+                "AUDIT_QUEUE": [], 
+                "MATCHED": result.get("MATCHED", [])
+            }
             gl_rem, bk_rem = gl_input, bk_input
 
         if not bk_rem:
@@ -356,7 +418,10 @@ class AIMatcher:
             residual_res, final_gl_left = self.residual_match(gl_rem, bk_rem)
         except Exception as e:
             print(f" AI Residual Matcher crashed: {e}. Returning pools as unreconciled.")
-            residual_res = {"AI_MANY_MATCHES": [], "AUDIT_QUEUE": []}
+            residual_res = {
+                "AI_MANY_MATCHES": [], 
+                "AUDIT_QUEUE": []
+            }
             final_gl_left = gl_rem
 
         combined_audit = batch_res.get("AUDIT_QUEUE", []) + residual_res.get("AUDIT_QUEUE", [])

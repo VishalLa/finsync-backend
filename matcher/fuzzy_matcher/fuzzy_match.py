@@ -8,8 +8,9 @@ from typing import Any, Callable, List, Optional, Tuple, Set, Dict
 from schema import BankStatement, LedgerFormat, IgnoredMetadataRecord, AuditInvestigationItem
 
 from .business_calendar import BusinessCalendar
+from .subset_sum import find_subsets
 
-from ..utils.helper import (
+from utils.helper import (
     _NSF_RE,
     _INTEREST_RE,
     _REVERSAL_RE,
@@ -55,7 +56,10 @@ class _AmountIndex:
 
 class FuzzyMatcher:
     MAX_COMBINATION_SIZE: int = 6   
-    MAX_COMBINATION_POOL_SIZE: int = 15
+    MAX_COMBINATION_POOL_SIZE: int = 40
+    
+    SUBSET_MAX_NODES: int = 200_000
+    SUBSET_MAX_SOLUTIONS: int = 300
 
     _CROSS_MONTH_BUFFER: int = 15
 
@@ -143,7 +147,8 @@ class FuzzyMatcher:
 
 
     def cleanse_zero_amount_metadata(self) -> None:
-        for bk in list(self.bank_pool):
+        remaining_bank = []
+        for bk in self.bank_pool:
             if abs(_get_amt(bk)) <= 0.001:
                 self.ignored_metadata_records.append(
                     IgnoredMetadataRecord(
@@ -152,9 +157,12 @@ class FuzzyMatcher:
                         narration = getattr(bk, "narration", "OPENING/CLOSING BALANCE"),
                     )
                 )
-                self.bank_pool.remove(bk)
+            else:
+                remaining_bank.append(bk)
+        self.bank_pool = remaining_bank
 
-        for gl in list(self.ledger_pool):
+        remaining_ledger = []
+        for gl in self.ledger_pool:
             if abs(_get_amt(gl)) <= 0.001:
                 self.ignored_metadata_records.append(
                     IgnoredMetadataRecord(
@@ -163,7 +171,9 @@ class FuzzyMatcher:
                         narration = getattr(gl, "account_name", "Header/Metadata Row"),
                     )
                 )
-                self.ledger_pool.remove(gl)
+            else:
+                remaining_ledger.append(gl)
+        self.ledger_pool = remaining_ledger
 
 
     def flag_ghost_reversals(self) -> None:
@@ -731,11 +741,16 @@ class FuzzyMatcher:
 
     # Strategy 8 - Interest Income (standalone bank credit)
     def match_interest_income(self) -> None:
-        for bank in list(self.bank_pool):
+        remaining_bank = []
+        for bank in self.bank_pool:
             if self.bank_in(bank) <= 0:
+                remaining_bank.append(bank)
                 continue
+
             if not _INTEREST_RE.search(_safe_str(bank, "narration")):
+                remaining_bank.append(bank)
                 continue
+
             self.fuzzy_matches.append({
                 "ledger_id":        None,
                 "bank_id":          getattr(bank, "row_index", None),
@@ -747,7 +762,8 @@ class FuzzyMatcher:
                     f"add {self.bank_in(bank):.2f} to book balance via journal entry."
                 ),
             })
-            self.bank_pool.remove(bank)
+
+        self.bank_pool = remaining_bank
 
 
     # Strategy 9 - Discounts and Tax Withholdings
@@ -1086,17 +1102,26 @@ class FuzzyMatcher:
                 # (so one good row padded with unrelated rows scores poorly), with a small
                 # preference for fewer items. Acceptance gate is unchanged: max similarity > 0.15.
                 best = None           # (score, tie, combo)
-                cap = min(self.MAX_COMBINATION_SIZE + 1, len(valid) + 1)
-                for r in range(2, cap):
-                    for combo in self._combos_with_sum(valid, a_amt, r):
-                        sims = [sim_of(x[0]) for x in combo]
-                        if max(sims) <= 0.15:
-                            continue
-                        
-                        score = sum(sims) / r - 0.02 * (r - 2)
-                        if best is None or score > best[0] + 1e-12:
-                            best = (score, 0, combo)
-                            
+                search = find_subsets(
+                    [int(round(x[1]*100)) for x in valid],
+                    int(round(a_amt * 100)),
+                    int(round(self._tol * 100)),
+                    min_size=2,
+                    max_size=self.MAX_COMBINATION_SIZE,
+                    max_nodes=self.SUBSET_MAX_NODES,
+                    max_solutions=self.SUBSET_MAX_SOLUTIONS
+                )
+                for sel in search.solutions:
+                    combo = tuple(valid[i] for i in sel)
+                    r = len(combo)
+                    sims = [sim_of(x[0] for x in combo)]
+                    if max(sims) <= 0.15:
+                        continue
+                    
+                    score = sum(sims) / r - 0.02 * (r - 2)
+                    if best is None or score > best[0] + 1e-12:
+                        best = (score, 0, combo)
+                
                 if best is None:
                     continue
                 

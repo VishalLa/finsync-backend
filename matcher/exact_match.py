@@ -10,6 +10,7 @@ from utils.helper import (
     _safe_amount,
     _safe_str,
     _to_date,
+    _to_paise,
 )
 
 _DEFAULT_AMOUNT_TOL = 0.05
@@ -20,7 +21,7 @@ _NONE_TIER = 0
 
 
 def _cents(x: float) -> int:
-    return int(round(abs(x) * 100))
+    return abs(_to_paise(x))
 
 
 def _date_key(rec: object, is_bank: bool) -> Optional[str]:

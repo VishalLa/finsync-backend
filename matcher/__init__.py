@@ -79,12 +79,11 @@ def reconcile(
         if detection.confident:
             if detection.same_side != same_side:
                 all_warnings.append(
-                    f"Detected ledger/bank orientation differs from the "
-                    f"configured same_side={same_side}; using "
-                    f"same_side={detection.same_side} based on "
-                    f"{detection.reason}."
+                    f"Detected ledger/bank orientation same_side="
+                    f"{detection.same_side}, which differs from the configured "
+                    f"same_side={same_side}; continuing with the configured "
+                    f"value. Detection reason: {detection.reason}."
                 )
-            same_side = detection.same_side
 
     exact_match_result = exact_match(
         gl_records=gl_records,

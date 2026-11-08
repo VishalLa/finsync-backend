@@ -434,13 +434,11 @@ def _generate_journal_drafts(
     if not missing_bank:
         return [], [], False, None
 
-    using_shared = llm is None
-    if using_shared:
-        llm = get_shared_llm(config=config)
-
     llm_available = True
     skip_reason: Optional[str] = None
     try:
+        if llm is None:
+            llm = get_shared_llm(config=config)
         llm.invoke("ping")
     except Exception as conn_err:
         llm_available = False

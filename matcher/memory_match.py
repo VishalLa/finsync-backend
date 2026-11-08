@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Protocol, Tuple, Set
 
 from schema import RecognizedPattern
 
-from utils.helper import _STOPWORDS, _INDIAN_PREFIX_RE
+from utils.helper import _STOPWORDS, _INDIAN_PREFIX_RE, _amounts_equal
 
 _VPA_RE = re.compile(r"@[a-z0-9.\-]+", re.I)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -380,13 +380,13 @@ def memory_matcher(
 
             if same_side:
                 amt_ok = (
-                    (gl_debit  > 0 and abs(gl_debit  - b_debit)  <= amount_tol) or
-                    (gl_credit > 0 and abs(gl_credit - b_credit) <= amount_tol)
+                    (gl_debit  > 0 and _amounts_equal(gl_debit, b_debit, amount_tol)) or
+                    (gl_credit > 0 and _amounts_equal(gl_credit, b_credit, amount_tol))
                 )
             else:
                 amt_ok = (
-                    (gl_debit  > 0 and abs(gl_debit  - b_credit) <= amount_tol) or
-                    (gl_credit > 0 and abs(gl_credit - b_debit)  <= amount_tol)
+                    (gl_debit  > 0 and _amounts_equal(gl_debit, b_credit, amount_tol)) or
+                    (gl_credit > 0 and _amounts_equal(gl_credit, b_debit, amount_tol))
                 )
 
             if amt_ok:

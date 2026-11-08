@@ -80,8 +80,12 @@ def _get_iso_date_str(rec: object, is_bank: bool = False) -> Optional[str]:
     return None
 
 
+def _to_paise(amount: float) -> int:
+    return int(round(float(amount) * 100))
+
+
 def _amounts_equal(a: float, b: float, tol: float) -> bool:
-    return abs(a - b) <= tol
+    return abs(_to_paise(a) - _to_paise(b)) <= _to_paise(tol)
 
 
 def _to_date(iso_str: Optional[str]) -> Optional[_date]:

@@ -14,7 +14,7 @@ from .ai_utils import (
     _safe_parse_json,
     _passes_1to1_bouncer,
     _passes_many_to_one_bouncer,
-    _filter_candidates_for_bank,
+    _find_candidate_subsets_for_bank,
     _format_record_for_prompt,
 )
 
@@ -45,7 +45,8 @@ class AIMatcher:
         same_side: bool = True,
     ) -> None:
         self._owns_shared_llm = llm is None
-        self.llm = llm or get_shared_llm(config)
+        self.llm: Optional[ChatOllama] = llm
+        self._config = config
         self.tol = tol
         self.same_side = same_side
 
@@ -53,12 +54,19 @@ class AIMatcher:
     def _check_connectivity(self) -> Optional[str]:
         """Returns None if the LLM is reachable, else an error string."""
         try:
+            if self.llm is None:
+                self.llm = get_shared_llm(self._config)
             self.llm.invoke("ping")
             return None
         except Exception as exc:
             if self._owns_shared_llm:
                 reset_shared_llm()
             return str(exc)
+
+    def _require_llm(self) -> ChatOllama:
+        if self.llm is None:
+            raise RuntimeError("LLM is not initialized")
+        return self.llm
 
 
     # Phase A — 1-to-1 batch matcher, sliding time windows
@@ -132,7 +140,7 @@ class AIMatcher:
         current_start = datetime.strptime(dates[0][:10], "%Y-%m-%d")
         final_end = datetime.strptime(dates[-1][:10], "%Y-%m-%d")
 
-        chain = self._BATCH_PROMPT | self.llm
+        chain = self._BATCH_PROMPT | self._require_llm()
 
         while current_start <= final_end:
             window_end = current_start + window_size
@@ -165,65 +173,85 @@ class AIMatcher:
                 ),
             )
 
-            gl_ctx = [
-                _format_record_for_prompt(r.model_dump(), False)
-                for r in gl_chunk[:MAX_RECORDS_PER_WINDOW]
-            ]
-            bk_ctx = [
-                _format_record_for_prompt(r.model_dump(), True)
-                for r in bk_chunk[:MAX_RECORDS_PER_WINDOW]
-            ]
+            for gl_offset in range(0, len(gl_chunk), MAX_RECORDS_PER_WINDOW):
+                gl_batch = [
+                    record
+                    for record in gl_chunk[gl_offset:gl_offset + MAX_RECORDS_PER_WINDOW]
+                    if str(record.ledger_id) not in used_ledger
+                ]
+                for bk_offset in range(0, len(bk_chunk), MAX_RECORDS_PER_WINDOW):
+                    bk_batch = [
+                        record
+                        for record in bk_chunk[bk_offset:bk_offset + MAX_RECORDS_PER_WINDOW]
+                        if str(record.row_index) not in used_bank
+                    ]
+                    if not gl_batch or not bk_batch:
+                        continue
 
-            if not gl_ctx or not bk_ctx:
-                current_start += window_step
-                continue
-
-            raw = chain.invoke({
-                "tol": f"{self.tol:.2f}",
-                "confidence_threshold": str(CONFIDENCE_THRESHOLD),
-                "start_date": current_start.strftime("%Y-%m-%d"),
-                "end_date": window_end.strftime("%Y-%m-%d"),
-                "ledger_list": "\n".join(gl_ctx),
-                "bank_list": "\n".join(bk_ctx),
-            })
-            result = _safe_parse_json(raw, AIWindowOutput)
-
-            if result and hasattr(result, "matches"):
-                for m in result.matches:
-                    ledger_id = str(m.ledger_id)
-                    gl_item = gl_by_id.get(ledger_id)
-                    bank_id = str(m.bank_id)
-                    bk_item = bk_by_id.get(bank_id)
-
-                    if (
-                        gl_item is None
-                        or bk_item is None
-                        or ledger_id in used_ledger
-                        or bank_id in used_bank
+                    if not any(
+                        _passes_1to1_bouncer(gl_item, bk_item, self.tol, self.same_side)[0]
+                        for gl_item in gl_batch
+                        for bk_item in bk_batch
                     ):
-                        print(f" GHOST REFERENCE: Ledger '{m.ledger_id}' or "
-                              f"Bank '{m.bank_id}' not found in pools - skipped.")
                         continue
 
-                    if m.confidence < CONFIDENCE_THRESHOLD:
-                        audit_queue.append({
-                            **m.model_dump(),
-                            "flag": "LOW_CONFIDENCE",
-                            "action": "Route to human audit - confidence below threshold.",
-                        })
-                        print(f" LOW CONFIDENCE ({m.confidence:.0%}): "
-                              f"[Ledger {m.ledger_id}] ↔ [Bank {m.bank_id}] → audit queue.")
-                        continue
+                    gl_ctx = [
+                        _format_record_for_prompt(r.model_dump(), False)
+                        for r in gl_batch
+                    ]
+                    bk_ctx = [
+                        _format_record_for_prompt(r.model_dump(), True)
+                        for r in bk_batch
+                    ]
 
-                    passed, reason = _passes_1to1_bouncer(gl_item, bk_item, self.tol, self.same_side)
-                    if not passed:
-                        print(f" REJECTED HALLUCINATION (1-to-1): "
-                              f"[Ledger {m.ledger_id}] ↔ [Bank {m.bank_id}] - {reason}")
-                        continue
+                    raw = chain.invoke({
+                        "tol": f"{self.tol:.2f}",
+                        "confidence_threshold": str(CONFIDENCE_THRESHOLD),
+                        "start_date": current_start.strftime("%Y-%m-%d"),
+                        "end_date": window_end.strftime("%Y-%m-%d"),
+                        "ledger_list": "\n".join(gl_ctx),
+                        "bank_list": "\n".join(bk_ctx),
+                    })
+                    result = _safe_parse_json(raw, AIWindowOutput)
 
-                    ai_matches.append(m.model_dump())
-                    used_ledger.add(ledger_id)
-                    used_bank.add(bank_id)
+                    if result and hasattr(result, "matches"):
+                        for m in result.matches:
+                            ledger_id = str(m.ledger_id)
+                            gl_item = gl_by_id.get(ledger_id)
+                            bank_id = str(m.bank_id)
+                            bk_item = bk_by_id.get(bank_id)
+
+                            if (
+                                gl_item is None
+                                or bk_item is None
+                                or ledger_id in used_ledger
+                                or bank_id in used_bank
+                            ):
+                                print(f" GHOST REFERENCE: Ledger '{m.ledger_id}' or "
+                                      f"Bank '{m.bank_id}' not found in pools - skipped.")
+                                continue
+
+                            if m.confidence < CONFIDENCE_THRESHOLD:
+                                audit_queue.append({
+                                    **m.model_dump(),
+                                    "flag": "LOW_CONFIDENCE",
+                                    "action": "Route to human audit - confidence below threshold.",
+                                })
+                                print(f" LOW CONFIDENCE ({m.confidence:.0%}): "
+                                      f"[Ledger {m.ledger_id}] ↔ [Bank {m.bank_id}] → audit queue.")
+                                continue
+
+                            passed, reason = _passes_1to1_bouncer(
+                                gl_item, bk_item, self.tol, self.same_side
+                            )
+                            if not passed:
+                                print(f" REJECTED HALLUCINATION (1-to-1): "
+                                      f"[Ledger {m.ledger_id}] ↔ [Bank {m.bank_id}] - {reason}")
+                                continue
+
+                            ai_matches.append(m.model_dump())
+                            used_ledger.add(ledger_id)
+                            used_bank.add(bank_id)
 
             current_start += window_step
 
@@ -246,10 +274,10 @@ class AIMatcher:
     _RESIDUAL_PROMPT = ChatPromptTemplate.from_messages([
         ("system",
          "You are a financial reconciliation expert.\n"
-         "A single bank transaction may correspond to MULTIPLE ledger entries.\n"
-         "TASK: Find which combination of the provided ledger entries sums to "
-         "the bank amount within ±{tol} tolerance.\n"
-         "Use narration semantics and date proximity as secondary signals.\n"
+         "Choose the best semantic match from the precomputed combinations below.\n"
+         "Every combination has already passed amount, direction, and date checks.\n"
+         "Select only one listed combination and do not add, remove, or substitute IDs.\n"
+         "If none is semantically plausible, return an empty matches list.\n"
          "Only propose matches you rate ≥ {confidence_threshold} confidence.\n"
          "OUTPUT FORMAT: Strict JSON ONLY. No markdown.\n"
          'Schema: {{"matches": [{{"bank_id": number, '
@@ -258,8 +286,8 @@ class AIMatcher:
         ("human",
          "TOLERANCE: ±{tol}\n\n"
          "BANK ENTRY:\n{bank_info}\n\n"
-         "CANDIDATE LEDGER ENTRIES (pre-filtered ±{date_window}d, amount ≤ bank+tol):\n"
-         "{ledger_candidates}"),
+         "VALID AMOUNT-VERIFIED COMBINATIONS:\n"
+         "{valid_combinations}"),
     ])
 
     def residual_match(
@@ -287,33 +315,57 @@ class AIMatcher:
                 "AUDIT_QUEUE": audit_queue
             }, gl_left
 
-        chain = self._RESIDUAL_PROMPT | self.llm
+        chain = self._RESIDUAL_PROMPT | self._require_llm()
 
         for bank in bk_remaining:
             gl_left = [
                 record for ledger_id, record in gl_by_id.items()
                 if ledger_id not in used_ledger
             ]
-            candidates = _filter_candidates_for_bank(
-                bank, gl_left,
+            
+            subsets, exhaustive = _find_candidate_subsets_for_bank(
+                bank,
+                gl_left,
                 date_window=CANDIDATE_DATE_WINDOW_DAYS,
                 tol=self.tol,
+                same_side=self.same_side,
             )
-            if not candidates:
+            
+            if not exhaustive:
+                audit_queue.append({
+                    "bank_id": bank.row_index,
+                    "flag": "SUBSET_SEARCH_INCOMPLETE",
+                    "action": (
+                        "Route to human audit - bounded subset search found "
+                        "too many possibilities to safely select a match."
+                    ),
+                })
+                continue
+            
+            if not subsets:
                 continue
 
-            ctx_ledger = "\n".join(
-                _format_record_for_prompt(g.model_dump(), False)
-                for g in candidates
-            )
+            valid_subset_ids = set()
+            option_text = []
+            for option_number, subset in enumerate(subsets, start=1):
+                subset_ids = tuple(sorted(str(record.ledger_id) for record in subset))
+                valid_subset_ids.add(subset_ids)
+                entries = "\n".join(
+                    _format_record_for_prompt(record.model_dump(), False)
+                    for record in subset
+                )
+                option_text.append(
+                    f"Option {option_number} (ledger_ids: {', '.join(subset_ids)}):\n"
+                    f"{entries}"
+                )
+
             ctx_bank = _format_record_for_prompt(bank.model_dump(), True)
 
             raw = chain.invoke({
                 "tol": f"{self.tol:.2f}",
                 "confidence_threshold": str(CONFIDENCE_THRESHOLD),
-                "date_window": str(CANDIDATE_DATE_WINDOW_DAYS),
                 "bank_info": ctx_bank,
-                "ledger_candidates": ctx_ledger,
+                "valid_combinations": "\n\n".join(option_text),
             })
             result = _safe_parse_json(raw, AIManyToOneOutput)
 
@@ -321,7 +373,23 @@ class AIMatcher:
                 continue
 
             for m in result.matches:
-                matched_ids = [str(lid.ledger_id) for lid in m.ledger_ids]
+                if str(m.bank_id) != str(bank.row_index):
+                    print(
+                        f" REJECTED HALLUCINATION (many-to-1): "
+                        f"response bank {m.bank_id} does not match requested bank "
+                        f"{bank.row_index}."
+                    )
+                    continue
+
+                matched_ids = tuple(sorted(str(lid.ledger_id) for lid in m.ledger_ids))
+                if matched_ids not in valid_subset_ids:
+                    print(
+                        f" REJECTED HALLUCINATION (many-to-1): "
+                        f"ledger IDs {matched_ids} are not a verified subset for "
+                        f"bank {bank.row_index}."
+                    )
+                    continue
+
                 gl_items = [
                     gl_by_id[ledger_id]
                     for ledger_id in matched_ids
@@ -346,6 +414,7 @@ class AIMatcher:
 
                 ai_many_matches.append(m.model_dump())
                 used_ledger.update(matched_ids)
+                break
 
         gl_left = [
             record for ledger_id, record in gl_by_id.items()

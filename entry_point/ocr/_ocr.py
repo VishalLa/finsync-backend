@@ -1,5 +1,4 @@
 from pathlib import Path
-from paddleocr import PaddleOCR
 from typing import Optional
 
 
@@ -29,7 +28,20 @@ class OCR:
     initlize paddleOCR and detect char
     """
     def __init__(self):
-        self.ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False, use_gpu=False)
+        try:
+            from paddleocr import PaddleOCR
+        except ImportError as exc:
+            raise RuntimeError(
+                "PaddleOCR is required for scanned-page extraction. "
+                "Install entry_point/requirements.txt."
+            ) from exc
+
+        self.ocr = PaddleOCR(
+            use_angle_cls=True, 
+            lang="en", 
+            show_log=False, 
+            use_gpu=False
+        )
 
 
     @staticmethod
@@ -51,7 +63,7 @@ class OCR:
                     y = int(box[0][1])
                     blocks.append(Block(x, y, text.strip(), conf))
 
-            except Exception:
+            except (TypeError, ValueError, IndexError):
                 continue
         blocks.sort(key=lambda b:(b.y, b.x))
         return blocks

@@ -19,7 +19,7 @@ from entry_point import (
     load_ledger,
     parse_invoice,
 )
-from entry_point.ocr import Block, get_ocr
+from entry_point.ocr._ocr import Block, get_ocr
 from schema import journal_entries_to_ledger_records
 
 from .bank_rec_service.store_bank_rec_data import PushBankRecData

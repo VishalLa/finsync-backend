@@ -1,5 +1,5 @@
 import re
-from .ocr import Block
+from ._ocr import Block
 
 try:
     from dateutil import parser as _dateparser

@@ -65,7 +65,10 @@ def parse_amount(value: Any) -> float:
     return -abs(amt) if negative else amt
 
 
-def parse_date(value: Any, date_format: str) -> Tuple[Optional[str], Optional[str]]:
+def parse_date(
+    value: Any, 
+    date_format: str
+) -> Tuple[Optional[str], Optional[str]]:
     """Returns (iso_date_string_or_None, warning_or_None)."""
     if value is None:
         return None, "empty date"
@@ -84,8 +87,30 @@ def parse_date(value: Any, date_format: str) -> Tuple[Optional[str], Optional[st
     try:
         dt = datetime.strptime(s, date_format)
         return dt.date().isoformat(), None
-    except Exception:
+    except ValueError:
         pass
+
+    common_fallbacks = [
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d-%m-%y",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%d.%m.%Y",
+        "%d.%m.%y",
+        "%d-%b-%Y",
+        "%d-%b-%y",
+        "%d %b %Y",
+        "%d %b %y",
+        "%b %d, %Y",
+        "%Y/%m/%d",
+    ]
+    for fallback_format in common_fallbacks:
+        try:
+            dt = datetime.strptime(s, fallback_format)
+            return dt.date().isoformat(), None
+        except ValueError:
+            continue
 
     # Fallback: try pandas to parse common/ambiguous formats (infer dayfirst too)
     try:
@@ -99,25 +124,8 @@ def parse_date(value: Any, date_format: str) -> Tuple[Optional[str], Optional[st
     except Exception:
         pass
 
-    # Try a set of common explicit formats (day-first and month names)
-    COMMON_FALLBACKS = [
-        "%Y-%m-%d",
-        "%d-%m-%Y",
-        "%d/%m/%Y",
-        "%d-%b-%Y",
-        "%d %b %Y",
-        "%b %d, %Y",
-        "%Y/%m/%d",
-    ]
-    for fm in COMMON_FALLBACKS:
-        try:
-            dt = datetime.strptime(s, fm)
-            return dt.date().isoformat(), None
-        except Exception:
-            continue
-
     # Last resort: mention the formats we tried in the warning.
-    tried = [date_format, "pandas(auto, dayfirst=False)", "pandas(auto, dayfirst=True)"] + COMMON_FALLBACKS
+    tried = [date_format, "pandas(auto, dayfirst=False)", "pandas(auto, dayfirst=True)"] + common_fallbacks
     return None, f"date '{s}' did not match/parse any known formats (tried: {tried})"
 
 
@@ -135,7 +143,7 @@ _LEDGER_ALIASES: Dict[str, Tuple[str, ...]] = {
         "voucher date", "entry date",
     ),
     "account_name": (
-        "account_name", "particulars", "description",
+        "account_name", "holder", "particulars", "description",
         "narration", "details", "ledger name",
     ),
     "debit_amount": (
@@ -233,7 +241,7 @@ def _build_ledger_record(
 
     reference_id = str(row.get(col["reference_id"] or "", "") or "").strip() or None
 
-    # Excel-only extras stored as parse_warnings metadata if schema doesn't have fields
+    # Keep ingestion metadata out of the frozen Pydantic schema.
     opening_balance: Optional[float] = None
     closing_balance: Optional[float] = None
     ledger_type: Optional[str] = None
@@ -265,6 +273,11 @@ def _build_ledger_record(
     record.__dict__["opening_balance"] = opening_balance
     record.__dict__["closing_balance"] = closing_balance
     record.__dict__["ledger_type"]     = ledger_type
+    for metadata_field in ("bank_name", "holder", "category"):
+        value = row.get(metadata_field)
+        record.__dict__[metadata_field] = (
+            str(value).strip() if value is not None and str(value).strip() else None
+        )
 
     return record
 
@@ -358,7 +371,7 @@ def load_ledger(
     Parse a user-uploaded ledger file (CSV **or** Excel .xlsx/.xls) into
     LedgerFormat records.
 
-    Extra fields extracted from Excel files
+    Extra fields extracted from CSV or Excel files
     ----------------------------------------
     opening_balance  – opening balance at the start of the ledger period
     closing_balance  – closing balance at the end of the ledger period
@@ -446,8 +459,17 @@ def load_ledger(
                 records.append(_build_ledger_record(row, col, date_format))
 
     except FileNotFoundError:
-        return {"records": [], "warnings": [f"Ledger file not found: {filepath}"]}
+        return {
+            "records": [], 
+            "warnings": [f"Ledger file not found: {filepath}"]
+        }
     except Exception as e:
-        return {"records": [], "warnings": [f"Failed to parse ledger file: {e}"]}
+        return {
+            "records": [], 
+            "warnings": [f"Failed to parse ledger file: {e}"]
+        }
 
-    return {"records": records, "warnings": file_warnings}
+    return {
+        "records": records, 
+        "warnings": file_warnings
+    }

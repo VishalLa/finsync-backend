@@ -61,7 +61,9 @@ def normalize_header_name(value: object) -> str:
 
 
 def normalized_header_set(columns: List[str]) -> set[str]:
-    return {normalize_header_name(c) for c in columns if normalize_header_name(c)}
+    return {
+        normalize_header_name(c) for c in columns if normalize_header_name(c)
+    }
 
 
 def _read_header_candidates(
@@ -73,7 +75,12 @@ def _read_header_candidates(
     candidates = []
 
     try:
-        with open(filepath, 'r', encoding=encoding, errors='replace', newline='') as file:
+        with open(
+            filepath, 'r', 
+            encoding=encoding, 
+            errors='replace', 
+            newline=''
+        ) as file:
             sample = file.read(4096)
             file.seek(0)
             try:
@@ -85,12 +92,14 @@ def _read_header_candidates(
             for i, row in enumerate(reader):
                 if i > max_skip:
                     break
+                
                 cols = [c.strip().lstrip("\ufeff") for c in row]
                 if len(cols) >= 3:
                     candidates.append((i, cols))
 
     except (UnicodeDecodeError, FileNotFoundError):
-        pass 
+        pass
+    
     return candidates
 
 
@@ -114,7 +123,10 @@ def detect_bank(
         and flag it as a low-confidence guess.
     """
 
-    header_candidates = _read_header_candidates(filepath=filepath, encoding=encoding)
+    header_candidates = _read_header_candidates(
+        filepath=filepath, 
+        encoding=encoding
+    )
     templates = get_all_templates()
 
     exact_matches = []
@@ -125,13 +137,14 @@ def detect_bank(
         for tmpl in templates:
             if not tmpl.fingerprint:
                 continue
+            
             fingerprint = {normalize_header_name(c) for c in tmpl.fingerprint}
             if fingerprint.issubset(header_set):
                 exact_matches.append((row_idx, tmpl))
             else:
                 overlap = fingerprint & header_set
                 score = len(overlap) / len(fingerprint)
-
+                
                 if best_fuzzy is None or score > best_fuzzy[0]:
                     best_fuzzy = (score, row_idx, tmpl)
 
@@ -175,13 +188,19 @@ def parse_bank_date(
     formats = ([date_format] if date_format else []) + [
         "%Y-%m-%d",
         "%d-%m-%Y",
+        "%d-%m-%y",
         "%d/%m/%Y",
         "%d/%m/%y",
+        "%d.%m.%Y",
+        "%d.%m.%y",
         "%d %m %Y",
         "%d-%b-%Y",
+        "%d-%b-%y",
         "%d %b %Y",
+        "%d %b %y",
         "%b %d, %Y",
         "%Y/%m/%d",
+        "%Y%m%d",
     ]
     for fmt in formats:
         try:
@@ -199,9 +218,15 @@ def _read_csv_table(
     errors: List[str] = []
     for candidate in encodings:
         try:
-            with open(filepath, "r", encoding=candidate, newline="") as source:
+            with open(
+                filepath, 
+                "r", 
+                encoding=candidate, 
+                newline=""
+            ) as source:
                 sample = source.read(4096)
                 source.seek(0)
+                
                 try:
                     dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
                 except csv.Error:
@@ -212,8 +237,10 @@ def _read_csv_table(
                     for row in csv.reader(source, dialect)
                 ]
             return rows, errors
+        
         except UnicodeDecodeError as exc:
             errors.append(f"Could not decode as {candidate}: {exc}")
+            
         except OSError as exc:
             return [], [f"Could not read file: {exc}"]
         
@@ -235,7 +262,12 @@ def _read_excel_table(
     
     for sheet in sheets:
         try:
-            frame = workbook.parse(sheet, header=None, dtype=str, keep_default_na=False)
+            frame = workbook.parse(
+                sheet, 
+                header=None, 
+                dtype=str, 
+                keep_default_na=False
+            )
         except (ValueError, KeyError) as exc:
             errors.append(f"Could not read sheet '{sheet}': {exc}")
             continue
@@ -246,6 +278,7 @@ def _read_excel_table(
         ]
         if rows:
             return rows, errors
+    
     return [], errors or ["Excel file contains no rows."]
 
 
@@ -257,6 +290,7 @@ def _template_column_indices(
         normalize_header_name(header): index 
         for index, header in enumerate(headers)
     }
+    
     fields = {
         "date": template.date_column,
         "narration": template.narration_column,
@@ -267,6 +301,7 @@ def _template_column_indices(
         "balance": template.balance_column,
         "txn_id": template.txn_id_column,
     }
+    
     return {
         key: header_indices.get(normalize_header_name(column)) if column else None
         for key, column in fields.items()
@@ -296,9 +331,12 @@ def _match_template(
     fuzzy: Optional[Tuple[float, BankTemplate]] = None
     
     for template in get_all_templates():
-        fingerprint = {normalize_header_name(column) for column in template.fingerprint}
+        fingerprint = {
+            normalize_header_name(column) for column in template.fingerprint
+        }
         if not fingerprint:
             continue
+        
         if fingerprint.issubset(header_set):
             exact.append(template)
             continue
@@ -348,6 +386,7 @@ def detect_table(
             
             columns = _infer_columns(row)
             recognized = sum(value is not None for value in columns.values())
+            
             if columns["date"] is not None and columns["narration"] is not None:
                 if best_inferred is None or recognized > best_inferred[1]:
                     best_inferred = (index, recognized, columns)
@@ -357,6 +396,7 @@ def detect_table(
             
     if selected_idx is None:
         return None, warnings + ["Could not identify a transaction header row."]
+    
     if selected_idx < 0 or selected_idx >= len(rows):
         return None, warnings + [f"Header row index {selected_idx} is outside the file."]
 
@@ -364,19 +404,25 @@ def detect_table(
     detected_template, confidence = _match_template(headers)
     selected_template = selected_template or detected_template
     selected_confidence = selected_confidence or confidence
-    columns = _template_column_indices(selected_template, headers) if selected_template else _infer_columns(headers)
+    
+    columns = _template_column_indices(
+        selected_template, headers
+    ) if selected_template else _infer_columns(headers)
     match_type = "exact" if selected_confidence == 1.0 else (
         "fuzzy" if selected_confidence is not None else "inferred"
     )
     
     notes: List[str] = []
     if selected_template is None:
-        notes.append("No registered bank template matched; column names were inferred.")
+        notes.append(
+            "No registered bank template matched; column names were inferred."
+        )
         bank_name, version, date_format = "Unknown Bank", "inferred", None
     else:
         bank_name = selected_template.bank_name
         version = selected_template.version
         date_format = selected_template.date_format
+        
         if match_type == "fuzzy":
             notes.append(f"Template match confidence: {selected_confidence:.2f}.")
 

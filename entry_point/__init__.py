@@ -1,7 +1,7 @@
 from importlib import import_module
 
-from .bank_loader import load_bank_statement
-from .ledger_loader import load_ledger
+from .ledger_handler.bank_loader import load_bank_statement
+from .ledger_handler.ledger_loader import load_ledger
 
 _OCR_EXPORTS = {"Block", "OCR", "get_ocr"}
 _DATA_EXTRACTOR_EXPORTS = {

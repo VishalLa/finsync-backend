@@ -8,7 +8,6 @@ from schema import BankStatement, BankTemplate
 from .bank_processor import (
     Detection,
     detect_table,
-    normalize_header_name,
     normalized_header_set,
     parse_bank_date,
 )
@@ -29,8 +28,10 @@ def parse_amount_side(value: Any) -> Tuple[float, Optional[str]]:
     """Return (signed_amount, side) where side is 'debit'/'credit'/None from a Dr/Cr marker."""
     if value is None:
         return 0.0, None
+    
     if isinstance(value, (int, float)):
         return (0.0, None) if value != value else (float(value), None)
+    
     s = str(value).strip()
     if s.lower() in _BLANKS:
         return 0.0, None
@@ -50,30 +51,36 @@ def parse_amount_side(value: Any) -> Tuple[float, Optional[str]]:
     cleaned = re.sub(r"[^\d.,]", "", s)
     if not cleaned.strip(".,"):
         return 0.0, side
+    
     # European style "1.234,56" / "12,50": comma is the decimal separator
     if re.search(r",\d{1,2}$", cleaned):
         cleaned = cleaned.replace(".", "").replace(",", ".")
     else:
         cleaned = cleaned.replace(",", "")
+        
     try:
         val = float(cleaned)
     except ValueError:
         return 0.0, side
+    
     return (-val if neg else val), side
 
 
 def classify_type_column(type_value: Any) -> Optional[str]:
     if type_value is None:
         return None
+    
     token = str(type_value).strip().lower()
     if not token:
         return None
+    
     first = re.split(r"[\s/._-]+", token)[0]
     for t in (token, first):
         if t in _DEBIT_TOKENS:
             return "debit"
         if t in _CREDIT_TOKENS:
             return "credit"
+        
     return None
 
 
@@ -96,15 +103,27 @@ def _cell(cells: List[str], idx: Optional[int]) -> str:
 def _fallback_narration_col(det: Detection) -> Optional[int]:
     """If no narration column was recognised, use the unmapped column with the longest text."""
     used = {v for v in det.cols.values() if v is not None}
-    width = max((len(r) for r in det.rows[det.header_idx + 1: det.header_idx + 200]), default=0)
+    width = max(
+        (
+            len(r) 
+            for r in det.rows[det.header_idx + 1: det.header_idx + 200]
+        ), default=0
+    )
     best, best_len = None, 0.0
     sample = det.rows[det.header_idx + 1: det.header_idx + 100]
+    
     for j in range(width):
         if j in used:
             continue
-        txt = [len(r[j]) for r in sample if j < len(r) and r[j]]
+        
+        txt = [
+            len(r[j]) 
+            for r in sample 
+            if j < len(r) and r[j]
+        ]
         if txt and sum(txt) / len(txt) > best_len:
             best, best_len = j, sum(txt) / len(txt)
+            
     return best
 
 
@@ -129,27 +148,46 @@ def load_bank_statement(
 
     Returns {"bank_name", "template_version", "records", "warnings"}.
     """
-    det, warnings = detect_table(filepath, template=template, header_row=header_row,
-                                 sheet_name=sheet_name, encoding=encoding)
+    det, warnings = detect_table(
+        filepath, 
+        template=template, 
+        header_row=header_row,
+        sheet_name=sheet_name, 
+        encoding=encoding
+    )
+    
     if det is None:
-        return {"bank_name": None, "template_version": None, "records": [],
-                "warnings": warnings}
+        return {
+            "bank_name": None, 
+            "template_version": None, 
+            "records": [], 
+            "warnings": warnings
+        }
 
     if det.match_type == "inferred":
         h = det.rows[det.header_idx]
-        mapping = {k: h[v] for k, v in det.cols.items() if v is not None}
-        warnings.append(f"Bank template not in registry; columns inferred automatically "
-                        f"(verify): {mapping}")
+        mapping = {
+            k: h[v] for k, v in det.cols.items() if v is not None
+        }
+        warnings.append(
+            f"Bank template not in registry; columns inferred automatically "
+            f"(verify): {mapping}"
+        )
+        
     elif det.match_type == "fuzzy":
-        warnings.append(f"Low-confidence bank match: {det.bank_name} "
-                        f"(confidence={det.confidence}). Please verify.")
+        warnings.append(
+            f"Low-confidence bank match: {det.bank_name} "
+            f"(confidence={det.confidence}). Please verify."
+        )
     warnings.extend(det.notes)
 
     cols = dict(det.cols)
     if cols.get("narration") is None:
         cols["narration"] = _fallback_narration_col(det)
-        warnings.append("No narration column recognised; "
-                        f"using column index {cols['narration']} as narration.")
+        warnings.append(
+            "No narration column recognised; "
+            f"using column index {cols['narration']} as narration."
+        )
 
     header_cells = det.rows[det.header_idx]
     header_set = normalized_header_set(header_cells)
@@ -183,18 +221,27 @@ def load_bank_statement(
         if use_debit_credit:
             debit = abs(parse_amount_side(_cell(cells, cols.get("debit")))[0])
             credit = abs(parse_amount_side(_cell(cells, cols.get("credit")))[0])
+            
             if debit > 0 and credit > 0:
                 row_warn.append("Row has both debit and credit amounts.")
+                
         elif use_amount:
             amt, side = parse_amount_side(_cell(cells, cols.get("amount")))
-            kind = classify_type_column(_cell(cells, cols.get("type"))) if cols.get("type") is not None else None
+            kind = classify_type_column(
+                _cell(cells, cols.get("type"))
+            ) if cols.get("type") is not None else None
+            
             if kind is None:
                 kind = side
+            
             if kind is None and amt != 0:
                 if cols.get("type") is not None and _cell(cells, cols.get("type")):
-                    row_warn.append(f"Unrecognised type value '{_cell(cells, cols.get('type'))}' "
-                                    "— classified by amount sign.")
+                    row_warn.append(
+                        f"Unrecognised type value '{_cell(cells, cols.get('type'))}' "
+                        "— classified by amount sign."
+                    )
                 kind = "debit" if amt < 0 else "credit"
+                
             if kind == "debit":
                 debit = abs(amt)
             elif kind == "credit":
@@ -206,21 +253,30 @@ def load_bank_statement(
             if not has_amount:
                 # continuation of previous narration? (only the narration cell is filled)
                 only_narr = bool(narration) and all(
-                    (not c) for j, c in enumerate(cells) if j != cols.get("narration"))
-                if only_narr and pending and not stop_continuation \
-                        and not _FOOTER_RE.search(narration):
+                    (not c) 
+                    for j, c in enumerate(cells) 
+                    if j != cols.get("narration")
+                )
+                
+                if only_narr and pending and not stop_continuation and not _FOOTER_RE.search(narration):
                     pending[-1]["narration"] += " " + narration
                     continue
+                
                 if any(_FOOTER_RE.search(c) for c in cells if c):
                     stop_continuation = True
+                
                 skipped += 1
                 continue
+            
             if not date_raw and any(_FOOTER_RE.search(c) for c in cells if c):
                 skipped += 1          # totals / summary row
                 stop_continuation = True
                 continue
-            row_warn.append("empty date" if not date_raw else
-                            f"date '{date_raw}' did not parse with format '{fmt}'")
+            
+            row_warn.append(
+                "empty date" if not date_raw else
+                f"date '{date_raw}' did not parse with format '{fmt}'"
+            )
         stop_continuation = False
 
         balance: Optional[float] = None
@@ -231,33 +287,54 @@ def load_bank_statement(
 
         txn_raw = _cell(cells, cols.get("txn_id"))
         pending.append({
-            "date": date_iso, "date_raw": date_raw or None, "narration": narration,
-            "debit": debit, "credit": credit, "balance": balance,
-            "txn_id": txn_raw or None, "warnings": row_warn,
+            "date": date_iso, 
+            "date_raw": date_raw or None, 
+            "narration": narration,
+            "debit": debit, 
+            "credit": credit, 
+            "balance": balance,
+            "txn_id": txn_raw or None, 
+            "warnings": row_warn,
         })
 
     records: List[BankStatement] = []
     for i, p in enumerate(pending):
         records.append(BankStatement(
-            row_index=i, bank_name=det.bank_name, template_version=det.version,
-            date=p["date"], date_raw=p["date_raw"], narration=p["narration"].strip(),
-            debit_amount=p["debit"], credit_amount=p["credit"], balance=p["balance"],
-            txn_id=p["txn_id"], parse_warnings=p["warnings"],
+            row_index=i, 
+            bank_name=det.bank_name, 
+            template_version=det.version,
+            date=p["date"], 
+            date_raw=p["date_raw"], 
+            narration=p["narration"].strip(),
+            debit_amount=p["debit"], 
+            credit_amount=p["credit"], 
+            balance=p["balance"],
+            txn_id=p["txn_id"], 
+            parse_warnings=p["warnings"],
         ))
 
     if skipped:
-        warnings.append(f"Skipped {skipped} non-transaction row(s) "
-                        "(footer, totals, repeated header, blank notes).")
+        warnings.append(
+            f"Skipped {skipped} non-transaction row(s) "
+            "(footer, totals, repeated header, blank notes)."
+        )
     if not records:
         warnings.append(
             f"Header found at row {det.header_idx} (columns: "
             f"{ {k: header_cells[v] for k, v in cols.items() if v is not None} }) "
-            "but no transaction rows could be parsed.")
+            "but no transaction rows could be parsed."
+        )
     else:
         bad = sum(1 for p in pending if p["date"] is None)
         if bad / len(pending) > 0.05:
-            warnings.append(f"{bad}/{len(pending)} rows have no valid date — check date format.")
+            warnings.append(
+                f"{bad}/{len(pending)} rows have no valid date — check date format."
+            )
 
-    return {"bank_name": det.bank_name, "template_version": det.version,
-            "records": records, "warnings": warnings}
+    return {
+        "bank_name": det.bank_name, 
+        "template_version": det.version,
+        "records": records, 
+        "warnings": warnings
+    }
     

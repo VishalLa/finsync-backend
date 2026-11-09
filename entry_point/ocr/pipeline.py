@@ -3,46 +3,41 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from schema import BankStatement, LedgerFormat
 
-from entry_point.ledger_handler.bank_loader import load_bank_statement
-from entry_point.ledger_handler.ledger_loader import load_ledger
+from ledger_handler.bank_loader import load_bank_statement
+from ledger_handler.ledger_loader import load_ledger
 
-from .classification import DocumentLayout, classify_document
-from .parsers import ParseResult, parser_for_layout, write_csv
-from .pdf_reader import ExtractedPage, extract_pdf_pages
+from .classification import classify_document
+from .bank_parser import parser_for_layout
+from .common import (
+    ExtractedPage,
+    ParseResult,
+    ProcessedDocument,
+)
+from .parsers import UnifiedGeneralLedgerParser, write_csv
+from .pdf_reader import extract_pdf_pages
 
 logger = logging.getLogger(__name__)
 _BALANCE_TOLERANCE = 0.02
 
 
-@dataclass
-class ProcessedDocument:
-    source: Path
-    csv_path: Path
-    metadata_path: Path
-    layout: DocumentLayout
-    row_count: int
-    warnings: list[str] = field(default_factory=list)
-    quarantined: bool = False
-
-
-def _transaction_values(row: dict[str, str], is_ledger: bool) -> tuple[float, float]:
+def _transaction_values(row: Dict[str, str], is_ledger: bool) -> Tuple[float, float]:
     if is_ledger:
         debit_key, credit_key = "debit_amount", "credit_amount"
     elif "Withdrawal Amt." in row:
         debit_key, credit_key = "Withdrawal Amt.", "Deposit Amt."
     else:
         debit_key, credit_key = "Debit", "Credit"
+        
     return float(row.get(debit_key) or 0), float(row.get(credit_key) or 0)
 
 
 def _set_transaction_values(
-    row: dict[str, str], debit: float, credit: float, is_ledger: bool
+    row: Dict[str, str], debit: float, credit: float, is_ledger: bool
 ) -> None:
     if is_ledger:
         debit_key, credit_key = "debit_amount", "credit_amount"
@@ -50,15 +45,18 @@ def _set_transaction_values(
         debit_key, credit_key = "Withdrawal Amt.", "Deposit Amt."
     else:
         debit_key, credit_key = "Debit", "Credit"
+        
     row[debit_key] = f"{debit:.2f}"
     row[credit_key] = f"{credit:.2f}"
 
 
 def validate_parse_result(
-    result: ParseResult, *, is_ledger: bool
-) -> tuple[int, int, list[str]]:
+    result: ParseResult, 
+    *, 
+    is_ledger: bool
+) -> Tuple[int, int, List[str]]:
     """Validate running balances and repair a clearly swapped debit/credit pair."""
-    warnings: list[str] = []
+    warnings: List[str] = []
     opening = result.metadata.get("opening_balance")
     previous_balance = float(opening) if opening is not None else None
     checks = failures = 0
@@ -78,11 +76,13 @@ def validate_parse_result(
         except ValueError:
             warnings.append(f"Row {index + 1}: balance value could not be validated.")
             balance = None
+        
         debit, credit = _transaction_values(row, is_ledger)
         if balance is None:
             if previous_balance is not None:
                 previous_balance += credit - debit
             continue
+        
         if previous_balance is None:
             previous_balance = balance
             continue
@@ -108,11 +108,13 @@ def validate_parse_result(
                 warnings.append(message)
                 if index < len(row_warnings):
                     row_warnings[index].append(message)
+        
         previous_balance = balance
 
     if result.totals is not None:
         debit_sum = sum(_transaction_values(row, is_ledger)[0] for row in result.rows)
         credit_sum = sum(_transaction_values(row, is_ledger)[1] for row in result.rows)
+        
         for field_name, actual in (
             ("debit_amount", debit_sum),
             ("credit_amount", credit_sum),
@@ -122,6 +124,7 @@ def validate_parse_result(
                 raise ValueError(
                     f"Ledger total {field_name} does not equal the sum of transaction rows."
                 )
+                
     return checks, failures, warnings
 
 
@@ -130,9 +133,11 @@ def _quarantine(source: Path, output_dir: Path) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / source.name
     counter = 1
+    
     while target.exists():
         target = target_dir / f"{source.stem}-{counter}{source.suffix}"
         counter += 1
+    
     return Path(shutil.move(str(source), str(target)))
 
 
@@ -144,22 +149,29 @@ def extract_document(
     use_gpu: bool = False,
     dry_run: bool = False,
 ) -> ProcessedDocument:
-    pages: list[ExtractedPage] = extract_pdf_pages(
+    pages: List[ExtractedPage] = extract_pdf_pages(
         source, force_ocr=force_ocr, use_gpu=use_gpu
     )
     if not pages:
         raise ValueError(f"No pages could be read from {source.name}.")
+    
     layout = classify_document(pages[0].text)
-    warnings: list[str] = []
+    warnings: List[str] = []
+    
     if layout.bank_name == "UNKNOWN" and layout.kind == "bank":
         warning = "Bank layout was not recognized; using UNKNOWN."
         logger.warning("%s Source: %s", warning, source.name)
         warnings.append(warning)
 
-    parser = parser_for_layout(layout)
+    parser = (
+        UnifiedGeneralLedgerParser()
+        if layout.kind == "ledger"
+        else parser_for_layout(layout)
+    )
     result = parser.parse(pages, layout, source)
     checks, failures, validation_warnings = validate_parse_result(
-        result, is_ledger=layout.kind == "ledger"
+        result, 
+        is_ledger=layout.kind == "ledger"
     )
     warnings.extend(result.warnings)
     warnings.extend(validation_warnings)
@@ -182,6 +194,7 @@ def extract_document(
         raise FileExistsError(
             f"Output for {source.name} already exists; choose a different output directory."
         )
+        
     write_csv(csv_path, result.headers, result.rows)
     metadata = {
         **result.metadata,
@@ -202,6 +215,7 @@ def extract_document(
         if not dry_run:
             quarantined_path = _quarantine(source, output_dir)
             logger.warning("%s Source: %s", warnings[-1], quarantined_path.name)
+        
     return ProcessedDocument(
         source=quarantined_path or source,
         csv_path=csv_path,
@@ -214,14 +228,16 @@ def extract_document(
 
 
 def _merge_sidecar_warnings(
-    records: Sequence[BankStatement | LedgerFormat], metadata: dict
+    records: Sequence[BankStatement | LedgerFormat], metadata: Dict[str, Any]
 ) -> None:
     document_warnings = metadata.get("warnings", [])
     row_warnings = metadata.get("row_warnings", [])
+    
     for index, record in enumerate(records):
         record.parse_warnings.extend(document_warnings)
         if index < len(row_warnings):
             record.parse_warnings.extend(row_warnings[index])
+        
         if isinstance(record, BankStatement):
             record.__dict__["account_number"] = metadata.get("account_number")
             record.__dict__["holder"] = metadata.get("holder")
@@ -229,24 +245,27 @@ def _merge_sidecar_warnings(
             record.__dict__["period"] = metadata.get("period")
 
 
-def load_processed_document(document: ProcessedDocument) -> dict:
+def load_processed_document(document: ProcessedDocument) -> Dict[str, Any]:
     if document.quarantined:
         raise RuntimeError(f"Refusing to load quarantined document {document.source.name}.")
+    
     metadata = json.loads(document.metadata_path.read_text(encoding="utf-8"))
     if document.layout.kind == "ledger":
         loaded = load_ledger(str(document.csv_path), date_format="%Y-%m-%d")
-        records: list[LedgerFormat] = loaded["records"]
+        records: List[LedgerFormat] = loaded["records"]
     else:
         loaded = load_bank_statement(str(document.csv_path))
         records = loaded["records"]
         for record in records:
             record.bank_name = document.layout.bank_name
         loaded["bank_name"] = document.layout.bank_name
+    
     if len(records) != document.row_count:
         raise AssertionError(
             f"Loaded {len(records)} records from {document.row_count} CSV transaction rows "
             f"for {document.source.name}."
         )
+        
     _merge_sidecar_warnings(records, metadata)
     loaded["warnings"] = list(loaded.get("warnings", [])) + metadata.get("warnings", [])
     loaded["metadata"] = metadata
@@ -260,24 +279,28 @@ def run_reconciliation(
     bank_name: Optional[str] = None,
     ledger_type: Optional[str] = None,
     matcher: Optional[Callable[..., Any]] = None,
-) -> dict:
+) -> Dict[str, Any]:
     """Build matcher-ready, account-number-matched inputs for each statement."""
-    banks_by_account: dict[str, list[BankStatement]] = {}
-    ledgers_by_account: dict[str, list[LedgerFormat]] = {}
+    banks_by_account: Dict[str, List[BankStatement]] = {}
+    ledgers_by_account: Dict[str, List[LedgerFormat]] = {}
+    
     for record in bank_records:
         account_number = record.__dict__.get("account_number")
         if account_number:
             banks_by_account.setdefault(str(account_number), []).append(record)
+            
     for record in ledger_records:
         if record.account_number:
             ledgers_by_account.setdefault(record.account_number, []).append(record)
 
-    handoffs = []
+    handoffs: List[Dict[str, Any]] = []
     matched_accounts = banks_by_account.keys() & ledgers_by_account.keys()
+    
     for account_number, bank_group in banks_by_account.items():
         ledger_group = ledgers_by_account.get(account_number, [])
         if not ledger_group:
             continue
+        
         payload = {
             "bank_name": bank_name or bank_group[0].bank_name,
             "ledger_type": ledger_type or ledger_group[0].__dict__.get("ledger_type"),
@@ -287,6 +310,7 @@ def run_reconciliation(
         }
         payload["matcher_result"] = matcher(**payload) if matcher else None
         handoffs.append(payload)
+    
     return {
         "handoffs": handoffs,
         "unmatched_bank_records": len(bank_records) - sum(
@@ -306,14 +330,16 @@ def run_pipeline(
     dry_run: bool = False,
     force_ocr: bool = False,
     use_gpu: bool = False,
-) -> dict:
+) -> Dict[str, Any]:
     if mode not in {"none", "load", "reconcile"}:
         raise ValueError("mode must be one of: none, load, reconcile")
+    
     source_path = Path(input_path)
     sources = [source_path] if source_path.is_file() else sorted(source_path.glob("*.pdf"))
     sources = [source for source in sources if source.suffix.lower() == ".pdf"]
     if not sources:
         raise FileNotFoundError(f"No PDF statements found in {source_path}.")
+    
     output_dir = Path(output_path)
     processed = [
         extract_document(
@@ -322,17 +348,19 @@ def run_pipeline(
         )
         for source in sources
     ]
-    loaded_documents = []
+    
+    loaded_documents: List[Tuple[ProcessedDocument, Dict[str, Any]]] = []
     if mode != "none" and not dry_run:
         for document in processed:
             if document.quarantined:
                 continue
             loaded_documents.append((document, load_processed_document(document)))
 
-    bank_records: list[BankStatement] = []
-    ledger_records: list[LedgerFormat] = []
+    bank_records: List[BankStatement] = []
+    ledger_records: List[LedgerFormat] = []
     ledger_types = set()
     bank_names = set()
+    
     for document, loaded in loaded_documents:
         if document.layout.kind == "ledger":
             ledger_records.extend(loaded["records"])
@@ -342,7 +370,9 @@ def run_pipeline(
             bank_records.extend(loaded["records"])
             if document.layout.bank_name != "UNKNOWN":
                 bank_names.add(document.layout.bank_name)
+                
     handoff = None
+    
     if mode == "reconcile" and not dry_run:
         handoff = run_reconciliation(
             bank_records,
@@ -350,6 +380,7 @@ def run_pipeline(
             bank_name=next(iter(bank_names)) if len(bank_names) == 1 else None,
             ledger_type=next(iter(ledger_types)) if len(ledger_types) == 1 else None,
         )
+    
     return {
         "documents": processed,
         "loaded_documents": loaded_documents,

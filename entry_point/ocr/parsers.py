@@ -3,50 +3,51 @@ from __future__ import annotations
 import csv
 import logging
 import re
-from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Optional, Sequence, List, Dict, Tuple, Any
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .classification import DocumentLayout
-from .pdf_reader import ExtractedPage, OCRBox
+from .common import (
+    DocumentLayout,
+    ExtractedPage,
+    LayoutParser,
+    OCRBox,
+    ParseResult,
+    TableRow,
+)
 
 logger = logging.getLogger(__name__)
 
-HDFC_HEADERS = [
-    "Date", "Narration", "Chq./Ref.No.", "Value Dt", "Withdrawal Amt.",
-    "Deposit Amt.", "Closing Balance",
-]
-AXIS_HEADERS = [
-    "Tran Date", "Chq No", "Particulars", "Debit", "Credit", "Balance",
-    "Init. Br",
-]
 LEDGER_HEADERS = [
     "ledger_id", "transaction_date", "account_name", "account_number",
     "debit_amount", "credit_amount", "reference_id", "ledger_type",
     "bank_name", "holder", "category",
 ]
-GENERIC_BANK_HEADERS = [
-    "Date", "Narration", "Txn_ID", "Debit", "Credit", "Balance",
-]
-
 _HEADER_ALIASES = {
-    "date": ("date", "tran date", "transaction date", "txn date", "value date"),
+    "date": ("date", "tran date", "transaction date", "transction date", "txn date"),
     "value_date": ("value dt", "value date"),
     "narration": (
         "narration", "particulars", "description", "account name", "ledger name",
-        "transaction particulars",
+        "transaction particulars", "transaction remarks",
     ),
     "txn_id": (
         "chq ref no", "chq no", "cheque no", "txn id", "transaction id",
-        "reference id", "ref no", "reference no", "voucher no",
+        "cheque number", "reference id", "ref no", "reference no", "voucher no",
+        "chq ref number",
+        "ref no cheque no",
     ),
-    "debit": ("withdrawal amt", "withdrawal", "debit", "debit amount", "dr"),
-    "credit": ("deposit amt", "deposit", "credit", "credit amount", "cr"),
+    "debit": (
+        "withdrawal amt", "withdrawal", "debit", "debit amount", "dr",
+        "withdrawal amount inr", "debited amount",
+    ),
+    "credit": (
+        "deposit amt", "deposit", "credit", "credit amount", "cr",
+        "deposit amount inr", "credited amount",
+    ),
     "amount": ("amount", "transaction amount"),
     "type": ("type", "dr cr", "transaction type"),
-    "balance": ("closing balance", "bank balance", "balance"),
+    "balance": ("closing balance", "bank balance", "balance", "balance inr"),
     "branch": ("init br", "branch"),
     "account_number": ("account number", "account no", "account_number", "account no."),
 }
@@ -58,27 +59,6 @@ _FOOTER_RE = re.compile(
 )
 _NUMERIC_OCR_MAP = str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "S": "5"})
 _BLANKS = {"", "-", "--", "na", "n/a", "nil", "none", "null", "nan"}
-
-
-@dataclass
-class TableRow:
-    page_number: int
-    boxes: List[OCRBox]
-
-    @property
-    def text(self) -> str:
-        return " ".join(box.text for box in sorted(self.boxes, key=lambda item: item.x0))
-
-
-@dataclass
-class ParseResult:
-    headers: List[str]
-    rows: List[Dict[str, str]]
-    metadata: Dict[str, Any]
-    warnings: List[str] = field(default_factory=list)
-    row_warnings: List[List[str]] = field(default_factory=list)
-    row_balances: List[Optional[float]] = field(default_factory=list)
-    totals: Optional[Dict[str, float]] = None
 
 
 def _normalized(text: str) -> str:
@@ -362,198 +342,6 @@ def _metadata(
     }
 
 
-class LayoutParser:
-    layout_name = "generic"
-
-    def parse(
-        self,
-        _pages: Sequence[ExtractedPage],
-        _layout: DocumentLayout,
-        _source_path: Path,
-    ) -> ParseResult:
-        raise NotImplementedError
-
-
-class BankStatementParser(LayoutParser):
-    layout_name = "generic_bank"
-    bank_headers = GENERIC_BANK_HEADERS
-    bank_date_header = "Date"
-
-    def parse(
-        self, 
-        pages: Sequence[ExtractedPage], 
-        _layout: DocumentLayout,
-        _source_path: Path
-    ) -> ParseResult:
-        clustered = _cluster_rows(pages)
-        header_index, anchors = _find_header(clustered)
-        metadata = _metadata(pages, None)
-        
-        output: List[Dict[str, str]] = []
-        warnings = [warning for page in pages for warning in page.warnings]
-        row_warnings: List[List[str]] = []
-        balances: List[Optional[float]] = []
-        previous: Optional[Dict[str, str]] = None
-
-        for row in clustered[header_index + 1:]:
-            cells = _row_cells(row, anchors)
-            row_text = row.text.strip()
-            if not row_text:
-                continue
-            
-            row_anchors = _find_header_anchors(row, _HEADER_ALIASES)
-            if {"date", "narration"}.issubset(row_anchors) and sum(
-                field in row_anchors for field in ("debit", "credit", "amount", "balance")
-            ) >= 1:
-                continue
-            
-            if re.search(
-                r"\b(opening balance|closing balance|statement summary|"
-                r"end of statement|page\s+\d+)\b",
-                row_text,
-                re.IGNORECASE,
-            ) or re.search(r"\btotal\b", row_text, re.IGNORECASE):
-                continue
-            
-            date = _parse_date(cells.get("date", ""))
-            narration = cells.get("narration", "").strip()
-            debit_text = cells.get("debit", "")
-            credit_text = cells.get("credit", "")
-            amount_text = cells.get("amount", "")
-            has_amount_text = bool((debit_text + credit_text + amount_text).strip())
-            
-            if _FOOTER_RE.search(row_text) and not has_amount_text:
-                continue
-            
-            if date is None and not has_amount_text and narration and previous is not None:
-                previous["Narration"] = (previous["Narration"] + " " + narration).strip()
-                continue
-            
-            if date is None and not has_amount_text:
-                continue
-
-            index = len(output) + 1
-            row_notes: list[str] = []
-            if date is None:
-                row_notes.append(f"Row {index}: date could not be parsed.")
-                
-            debit = _money(debit_text, row_number=index, field_name="debit", warnings=row_notes)
-            credit = _money(credit_text, row_number=index, field_name="credit", warnings=row_notes)
-            
-            if not debit_text and not credit_text and amount_text:
-                amount = _money(amount_text, row_number=index, field_name="amount", warnings=row_notes)
-                side = cells.get("type", "").lower()
-                debit, credit = (
-                    (abs(amount), Decimal("0.00"))
-                    if "dr" in side or amount < 0
-                    else (Decimal("0.00"), abs(amount))
-                )
-            
-            balance_text = cells.get("balance", "")
-            balance = (
-                _money(balance_text, row_number=index, field_name="balance", warnings=row_notes)
-                if balance_text
-                else None
-            )
-            txn_id = cells.get("txn_id", "").strip()
-            formatted_date = (
-                date.strftime("%d/%m/%y")
-                if self.bank_date_header == "Date" and date
-                else date.strftime("%d-%m-%Y") if date else ""
-            )
-            record = self._bank_record(
-                formatted_date, narration, txn_id, cells, debit, credit, balance
-            )
-            output.append(record)
-            row_warnings.append(row_notes)
-            balances.append(float(balance) if balance is not None else None)
-            previous = record
-
-        if not output:
-            raise ValueError("No transaction rows were found in the PDF table.")
-        
-        return ParseResult(
-            headers=self.bank_headers, 
-            rows=output, 
-            metadata=metadata, 
-            warnings=warnings, 
-            row_warnings=row_warnings, 
-            totals=balances
-        )
-
-    def _bank_record(
-        self,
-        date: str,
-        narration: str,
-        txn_id: str,
-        _cells: Dict[str, str],
-        debit: Decimal,
-        credit: Decimal,
-        balance: Optional[Decimal],
-    ) -> Dict[str, str]:
-        return {
-            "Date": date,
-            "Narration": narration,
-            "Txn_ID": txn_id,
-            "Debit": _format_money(debit),
-            "Credit": _format_money(credit),
-            "Balance": _format_money(balance) if balance is not None else "",
-        }
-
-
-class HdfcParser(BankStatementParser):
-    layout_name = "hdfc"
-    bank_headers = HDFC_HEADERS
-    bank_date_header = "Date"
-
-    def _bank_record(
-        self,
-        date: str,
-        narration: str,
-        txn_id: str,
-        cells: Dict[str, str],
-        debit: Decimal,
-        credit: Decimal,
-        balance: Optional[Decimal],
-    ) -> Dict[str, str]:
-        value_date = _parse_date(cells.get("value_date", ""))
-        return {
-            "Date": date,
-            "Narration": narration,
-            "Chq./Ref.No.": txn_id,
-            "Value Dt": value_date.strftime("%d/%m/%y") if value_date else "",
-            "Withdrawal Amt.": _format_money(debit),
-            "Deposit Amt.": _format_money(credit),
-            "Closing Balance": _format_money(balance) if balance is not None else "",
-        }
-
-
-class AxisParser(BankStatementParser):
-    layout_name = "axis"
-    bank_headers = AXIS_HEADERS
-    bank_date_header = "Tran Date"
-
-    def _bank_record(
-        self,
-        date: str,
-        narration: str,
-        txn_id: str,
-        cells: Dict[str, str],
-        debit: Decimal,
-        credit: Decimal,
-        balance: Optional[Decimal],
-    ) -> Dict[str, str]:
-        return {
-            "Tran Date": date,
-            "Chq No": txn_id,
-            "Particulars": narration,
-            "Debit": _format_money(debit),
-            "Credit": _format_money(credit),
-            "Balance": _format_money(balance) if balance is not None else "",
-            "Init. Br": cells.get("branch", ""),
-        }
-
-
 class UnifiedGeneralLedgerParser(LayoutParser):
     layout_name = "unified_general_ledger"
 
@@ -679,6 +467,7 @@ class UnifiedGeneralLedgerParser(LayoutParser):
 
         if not output:
             raise ValueError("No ledger transaction rows were found in the PDF table.")
+        
         return ParseResult(
             headers=LEDGER_HEADERS, 
             rows=output, 
@@ -688,20 +477,6 @@ class UnifiedGeneralLedgerParser(LayoutParser):
             row_balances=balances, 
             totals=totals
         )
-
-
-PARSER_REGISTRY: dict[str, type[LayoutParser]] = {
-    "hdfc": HdfcParser,
-    "axis": AxisParser,
-    "unified_general_ledger": UnifiedGeneralLedgerParser,
-}
-
-
-def parser_for_layout(
-    layout: DocumentLayout
-) -> LayoutParser:
-    parser_type = PARSER_REGISTRY.get(layout.parser_name or "", BankStatementParser)
-    return parser_type()
 
 
 def write_csv(

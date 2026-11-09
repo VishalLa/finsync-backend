@@ -76,7 +76,7 @@ def _read_sidecar(csv_path: Path) -> Dict:
 
 def _source_rows(
     truth_rows: List[Dict[str, str]], 
-    truth_headers: list[str], 
+    truth_headers: List[str],
     prediction: Path
 ) -> List[Dict[str, str]]:
     source_column = _column(truth_headers, ("appears_in_files",))

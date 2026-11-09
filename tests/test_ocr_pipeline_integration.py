@@ -3,20 +3,24 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from typing import List, Tuple
 
 from entry_point.ledger_handler.bank_processor import detect_bank
 from entry_point.ledger_handler.bank_loader import load_bank_statement
 from entry_point.ledger_handler.ledger_loader import load_ledger, parse_date
+from entry_point.ocr.bank_parser import (
+    BANK_TEMPLATE_HEADERS,
+    PARSER_REGISTRY,
+    parser_for_layout,
+)
 from entry_point.ocr.classification import classify_document
+from entry_point.ocr.common import DocumentLayout, ExtractedPage, OCRBox, ParseResult
 from entry_point.ocr.parsers import (
-    HDFC_HEADERS,
-    AXIS_HEADERS,
     LEDGER_HEADERS,
-    AxisParser,
     UnifiedGeneralLedgerParser,
     write_csv,
 )
-from entry_point.ocr.pdf_reader import ExtractedPage, OCRBox
+from schema.template import TEMPLATE_REGISTRY
 from entry_point.ocr.pipeline import (
     extract_document,
     load_processed_document,
@@ -31,7 +35,7 @@ def _box(text: str, x: float, y: float) -> OCRBox:
     return OCRBox(text, 0.99, x, y, x + max(8, len(text) * 4), y + 5)
 
 
-def _page(text: str, rows: list[list[tuple[str, float]]]) -> ExtractedPage:
+def _page(text: str, rows: List[List[Tuple[str, float]]]) -> ExtractedPage:
     boxes = [
         _box(value, x, 10.0 + index * 20.0)
         for index, row in enumerate(rows)
@@ -89,7 +93,7 @@ def test_hdfc_pdf_rows_load_as_schema_records(
     assert loaded["metadata"]["closing_balance"] is None
     assert set(record.model_dump()) == set(BankStatement.model_fields)
     assert any("confidence" in warning for warning in record.parse_warnings)
-    assert HDFC_HEADERS == [
+    assert BANK_TEMPLATE_HEADERS["HDFC_V1"] == [
         "Date", "Narration", "Chq./Ref.No.", "Value Dt", "Withdrawal Amt.",
         "Deposit Amt.", "Closing Balance",
     ]
@@ -150,20 +154,85 @@ def test_axis_native_headers_detect_and_load(tmp_path: Path) -> None:
         ],
     )
     layout = classify_document(page.text)
-    parsed = AxisParser().parse([page], layout, Path("axis.pdf"))
+    parsed = parser_for_layout(layout).parse([page], layout, Path("axis.pdf"))
     csv_path = tmp_path / "axis.csv"
     write_csv(csv_path, parsed.headers, parsed.rows)
 
     template, header_row, _ = detect_bank(str(csv_path))
     loaded = load_bank_statement(str(csv_path))
 
-    assert parsed.headers == AXIS_HEADERS
+    assert parsed.headers == BANK_TEMPLATE_HEADERS["AXIS_V1"]
     assert template is not None and template.bank_name == "Axis Bank"
     assert header_row == 0
     assert len(loaded["records"]) == len(parsed.rows) == 1
     assert loaded["records"][0].date == "2025-01-05"
     assert loaded["records"][0].credit_amount == 50.0
     assert set(loaded["records"][0].model_dump()) == set(BankStatement.model_fields)
+
+
+def test_every_registered_bank_template_has_a_working_parser() -> None:
+    assert set(PARSER_REGISTRY) == set(TEMPLATE_REGISTRY)
+
+    for template_key, template in TEMPLATE_REGISTRY.items():
+        headers = BANK_TEMPLATE_HEADERS[template_key]
+        assert template["fingerprint"].issubset(set(headers))
+        header_row = [(header, 20.0 + index * 100.0) for index, header in enumerate(headers)]
+        transaction_row = []
+        for index, header in enumerate(headers):
+            value = ""
+            if header == template["date_column"]:
+                value = "05/01/2025"
+            elif header == template["narration_column"]:
+                value = "Sample transaction"
+            elif header == template.get("txn_id_column"):
+                value = "REF-1"
+            elif header == template.get("debit_column"):
+                value = "10.00"
+            elif header == template.get("credit_column"):
+                value = ""
+            elif header == template.get("balance_column"):
+                value = "90.00"
+            elif header == template.get("amount_column"):
+                value = "10.00"
+            elif header == template.get("type_column"):
+                value = "Dr"
+            elif header.lower().replace(" ", "") in {"valuedt", "valuedate"}:
+                value = "05/01/2025"
+            transaction_row.append((value, 20.0 + index * 100.0))
+
+        page = _page(
+            " ".join(headers),
+            [header_row, transaction_row],
+        )
+        layout = DocumentLayout(
+            kind="bank",
+            bank_name=template["bank_name"],
+            parser_name=template_key,
+        )
+        parser = parser_for_layout(layout)
+        parsed = parser.parse([page], layout, Path("statement.pdf"))
+
+        assert parsed.headers == headers
+        assert len(parsed.rows) == 1
+        assert parsed.rows[0][template["date_column"]]
+
+
+def test_bank_classification_selects_registered_date_header_version() -> None:
+    pnb_v1 = classify_document("PUNJAB NATIONAL BANK\nTransction Date")
+    pnb_v2 = classify_document("PUNJAB NATIONAL BANK\nTransaction Date")
+    yes_v1 = classify_document("YES BANK\nTransction Date")
+    yes_v2 = classify_document("YES BANK\nTransaction Date")
+    pnb_header_only = classify_document("Transction Date Withdrawal Deposit")
+    yes_header_only = classify_document(
+        "Transaction Date Debited Amount Credited Amount"
+    )
+
+    assert pnb_v1.parser_name == "PNB_V1"
+    assert pnb_v2.parser_name == "PNB_V2"
+    assert yes_v1.parser_name == "YES_V1"
+    assert yes_v2.parser_name == "YES_V2"
+    assert pnb_header_only.parser_name == "PNB_V1"
+    assert yes_header_only.parser_name == "YES_V2"
 
 
 def test_ledger_date_fallback_prefers_day_first_for_two_digit_year() -> None:
@@ -174,8 +243,6 @@ def test_ledger_date_fallback_prefers_day_first_for_two_digit_year() -> None:
 
 
 def test_balance_delta_repairs_swapped_bank_amounts() -> None:
-    from entry_point.ocr.parsers import ParseResult
-
     parsed = ParseResult(
         headers=["Debit", "Credit", "Balance"],
         rows=[{"Debit": "10.00", "Credit": "0.00", "Balance": "110.00"}],
@@ -194,8 +261,6 @@ def test_balance_delta_repairs_swapped_bank_amounts() -> None:
 
 
 def test_running_balance_carries_forward_across_missing_balance_rows() -> None:
-    from entry_point.ocr.parsers import ParseResult
-
     parsed = ParseResult(
         headers=["Debit", "Credit", "Balance"],
         rows=[

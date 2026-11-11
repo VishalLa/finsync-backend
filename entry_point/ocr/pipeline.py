@@ -8,8 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from schema import BankStatement, LedgerFormat
 
-from ledger_handler.bank_loader import load_bank_statement
-from ledger_handler.ledger_loader import load_ledger
+from ..ledger_handler.bank_loader import load_bank_statement
+from ..ledger_handler.ledger_loader import load_ledger
 
 from .classification import classify_document
 from .bank_parser import parser_for_layout

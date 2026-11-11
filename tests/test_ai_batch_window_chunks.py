@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from langchain_core.runnables import RunnableLambda
 
-from matcher.ai_matcher import ai_matche
+from Backend.matcher.ai_matcher import ai_matcher
 from schema import BankStatement, LedgerFormat
 
 
@@ -34,8 +34,8 @@ def test_batch_match_includes_records_beyond_first_window_page(monkeypatch) -> N
             )
         return SimpleNamespace(matches=[])
 
-    monkeypatch.setattr(ai_matche, "_safe_parse_json", lambda output, _schema: output)
-    matcher = ai_matche.AIMatcher(
+    monkeypatch.setattr(ai_matcher, "_safe_parse_json", lambda output, _schema: output)
+    matcher = ai_matcher.AIMatcher(
         config=SimpleNamespace(),
         llm=RunnableLambda(respond),
         tol=0.0,

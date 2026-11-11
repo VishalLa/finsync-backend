@@ -12,11 +12,11 @@ from matcher import reconcile
 from ledger import TDSEngine, GSTR1Builder, JournalBuilder
 from database import BillModel, JournalEntryModel
 
-from entry_point import (
+from entry_point.ledger_handler.bank_loader import load_bank_statement
+from entry_point.ledger_handler.ledger_loader import load_ledger
+from entry_point.ocr.data_extractor import (
     classify_direction,
     detect_type,
-    load_bank_statement,
-    load_ledger,
     parse_invoice,
 )
 from entry_point.ocr._ocr import Block, get_ocr

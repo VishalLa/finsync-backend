@@ -1,12 +1,11 @@
 from typing import List, Optional
 
-from fuzzy_matcher.fuzzy_match import fuzzy_matcher
-from exact_match import exact_match
-from ai_matcher.ai_matche import ai_matcher
-from utils.confidence import annotate_match_confidence
-from same_side_detect import detect_same_side
-from memory_match import memory_matcher, MatchMemory
-from ai_matcher.residual_reconciler import reconcile_residuals
+from .fuzzy_matcher import fuzzy_matcher
+from .exact_match import exact_match
+from .ai_matcher import ai_match, reconcile_residuals
+from .utils.confidence import annotate_match_confidence
+from .same_side_detect import detect_same_side
+from .memory_match import memory_matcher, MatchMemory
 
 from shared.settings import Settings
 
@@ -119,7 +118,7 @@ def reconcile(
         "MATCHED":             [],
     }
 
-    ai_pipeline_output = ai_matcher(
+    ai_pipeline_output = ai_match(
         config=config,
         result=ai_input_payload,
         tol=TOLERANCES.get("AI_MATCHER", 5.0),

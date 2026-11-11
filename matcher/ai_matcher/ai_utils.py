@@ -12,8 +12,8 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from shared.settings import Settings
 from schema import LedgerFormat, BankStatement
-from fuzzy_matcher.subset_sum import find_subsets
-from utils.helper import _amounts_equal, _to_paise
+from ..fuzzy_matcher.subset_sum import find_subsets
+from ..utils.helper import _amounts_equal, _to_paise
 
 MAX_SUBSET_OPTIONS: int = 20
 MAX_SUBSET_SEARCH_NODES: int = 200_000

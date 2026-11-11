@@ -9,7 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from shared.settings import Settings
 from schema import BankStatement, LedgerFormat, DraftAccountSuggestion
 
-from utils.helper import (
+from ..utils.helper import (
     _amounts_equal,
     _days_between,
     _safe_str,
@@ -21,7 +21,7 @@ from .ai_utils import (
     _safe_parse_json,
     get_shared_llm
 )
-from fuzzy_matcher.fuzzy_match import FuzzyMatcher
+from ..fuzzy_matcher.fuzzy_match import FuzzyMatcher
 
 TIMING_WINDOW_DAYS: int = 45
 SPLIT_TOLERANCE: float = 2.0

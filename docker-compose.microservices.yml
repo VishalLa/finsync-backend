@@ -113,7 +113,7 @@ services:
     <<: *worker
     build:
       context: .
-      dockerfile: entry_point/Dockerfile
+      dockerfile: entry_point/ledger_handler/Dockerfile
     image: latice-entry:${TAG:-latest}
     command:
       - celery
@@ -243,7 +243,7 @@ services:
     profiles: ["next"]
     build:
       context: .
-      dockerfile: entry_point/Dockerfile.ocr
+      dockerfile: entry_point/ocr/Dockerfile.ocr
     image: latice-ocr:${TAG:-latest}
     command:
       - celery

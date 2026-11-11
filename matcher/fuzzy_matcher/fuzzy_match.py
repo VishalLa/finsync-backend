@@ -10,7 +10,7 @@ from schema import BankStatement, LedgerFormat, IgnoredMetadataRecord, AuditInve
 from .business_calendar import BusinessCalendar
 from .subset_sum import find_subsets
 
-from utils.helper import (
+from ..utils.helper import (
     _NSF_RE,
     _INTEREST_RE,
     _REVERSAL_RE,

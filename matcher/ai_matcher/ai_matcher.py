@@ -507,7 +507,7 @@ class AIMatcher:
         }
 
 
-def ai_matcher(
+def ai_match(
     config: Settings,
     result: Dict[str, Any],
     tol: float = 0.50,

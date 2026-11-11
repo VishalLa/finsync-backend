@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from langchain_core.runnables import RunnableLambda
 
-from matcher.ai_matcher import ai_matche
+from Backend.matcher.ai_matcher import ai_matcher
 from schema import BankStatement, LedgerFormat
 
 
@@ -29,8 +29,8 @@ def test_residual_match_searches_all_candidates_and_limits_llm_to_valid_subsets(
         prompts.append(prompt_value.to_string())
         return SimpleNamespace(matches=[selected_match])
 
-    monkeypatch.setattr(ai_matche, "_safe_parse_json", lambda output, _schema: output)
-    matcher = ai_matche.AIMatcher(
+    monkeypatch.setattr(ai_matcher, "_safe_parse_json", lambda output, _schema: output)
+    matcher = ai_matcher.AIMatcher(
         config=SimpleNamespace(),
         llm=RunnableLambda(respond),
         tol=0.0,

@@ -6,7 +6,7 @@ import pytest
 
 from matcher.ai_matcher import ai_utils
 from Backend.matcher.ai_matcher.ai_matcher import AIMatcher
-from matcher.ai_matcher.residual_reconciler import _generate_journal_drafts
+from Backend.matcher.residual_reconciler import _generate_journal_drafts
 from schema import BankStatement
 
 

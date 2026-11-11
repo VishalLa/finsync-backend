@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any, Optional, List, Tuple, Callable
 from datetime import date as _date
 from difflib import SequenceMatcher
 
@@ -45,6 +45,8 @@ _UTR_EXTRACT_RE = re.compile(
     """,
     re.VERBOSE | re.IGNORECASE,
 )
+
+MAX_COMBINATION_POOL_SIZE: int = 40
 
 def extract_utr(text: Optional[str]) -> Optional[str]:
     if not text:
@@ -199,3 +201,37 @@ def _get_date(rec: Any) -> Optional[_date]:
         else getattr(rec, "date", getattr(rec, "transaction_date", None))
     )
     return _to_date(str(d_str)) if d_str else None
+
+
+def _closest_candidates(
+    valid: List[Tuple],
+    target: float,
+    max_pool: int,
+    counterpart_text: str = "",
+    text_of: Optional[Callable[[Any], str]] = None,
+) -> List[Tuple]:
+    if len(valid) <= max_pool or target <= 0:
+        return valid
+    
+    max_k = 6
+    
+    def amount_distance(amount: float) -> float:
+        return min(abs(amount - target / k) for k in range(2, max_k + 1))
+    
+    def sim_score(record: Any) -> float:
+        if not text_of or not counterpart_text:
+            return 0.0
+        return text_similarity(counterpart_text, text_of(record))
+    
+    max_dist = max((amount_distance(x[1]) for x in valid), default=1.0) or 1.0
+    
+    def combined_score(item: Tuple) -> float:
+        record, amount = item
+        sim = sim_score(record)
+        dist_norm = amount_distance(amount) / max_dist
+        return (sim * 2.9) + (1.0 - dist_norm)
+    
+    ranked = sorted(valid, key=combined_score, reverse=True)
+    return ranked[:max_pool]
+    
+    

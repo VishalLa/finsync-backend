@@ -7,23 +7,24 @@ from typing import Any, Callable, List, Optional, Tuple, Set, Dict
 
 from schema import BankStatement, LedgerFormat, IgnoredMetadataRecord, AuditInvestigationItem
 
-from .business_calendar import BusinessCalendar
 from .subset_sum import find_subsets
 
+from .business_calendar import BusinessCalendar
 from ..utils.helper import (
     _NSF_RE,
     _INTEREST_RE,
     _REVERSAL_RE,
+    MAX_COMBINATION_POOL_SIZE,
     
     _safe_amount,
     _safe_str,
     _get_amt,
     _get_date,
     _amounts_equal,
-    _days_between,
     _crosses_month_boundary,
     _digit_multiset,
     _to_date,
+    _closest_candidates,
 
     text_similarity as _text_similarity,
     is_transposition,
@@ -56,7 +57,6 @@ class _AmountIndex:
 
 class FuzzyMatcher:
     MAX_COMBINATION_SIZE: int = 6   
-    MAX_COMBINATION_POOL_SIZE: int = 40
     
     SUBSET_MAX_NODES: int = 200_000
     SUBSET_MAX_SOLUTIONS: int = 300
@@ -68,12 +68,12 @@ class FuzzyMatcher:
         pending_ledger: List[LedgerFormat],
         pending_bank:   List[BankStatement],
         same_side:      bool = True,
-        tolerances:     dict[str, float | int] = None,
+        tolerances:     Dict[str, float | int] = None,
         calendar:       Optional[BusinessCalendar] = None
     ) -> None:
         self.ledger_pool:   List[LedgerFormat]  = list(pending_ledger)
         self.bank_pool:     List[BankStatement] = list(pending_bank)
-        self.fuzzy_matches: List[dict]          = []
+        self.fuzzy_matches: List[Dict[str, Any]]= []
 
         self.ignored_metadata_records:  List[IgnoredMetadataRecord]  = []
         self.audit_investigation_items: List[AuditInvestigationItem] = []
@@ -111,39 +111,6 @@ class FuzzyMatcher:
         if _crosses_month_boundary(date_iso_a, date_iso_b):
             return base_window + self._CROSS_MONTH_BUFFER
         return base_window
-
-
-    @staticmethod
-    def _closest_candidates(
-        valid:          List[tuple],
-        target:         float,
-        max_pool:       int,
-        counterpart_text: str = "",
-        text_of:        Optional[Callable[[Any], str]] = None,
-    ) -> List[tuple]:
-        if len(valid) <= max_pool or target <= 0:
-            return valid
-
-        max_k = 6  
-
-        def amount_distance(amount: float) -> float:
-            return min(abs(amount - target / k) for k in range(2, max_k + 1))
-
-        def sim_score(record: Any) -> float:
-            if not text_of or not counterpart_text:
-                return 0.0
-            return text_similarity(counterpart_text, text_of(record))
-
-        max_dist = max((amount_distance(x[1]) for x in valid), default=1.0) or 1.0
-
-        def combined_score(item: tuple) -> float:
-            record, amount = item
-            sim = sim_score(record)
-            dist_norm = amount_distance(amount) / max_dist
-            return (sim * 2.0) + (1.0 - dist_norm)
-
-        ranked = sorted(valid, key=combined_score, reverse=True)
-        return ranked[:max_pool]
 
 
     def cleanse_zero_amount_metadata(self) -> None:
@@ -1076,9 +1043,11 @@ class FuzzyMatcher:
                         valid.append((m, amt))
                         idx_of[id(m)] = k
 
-                truncated = len(valid) > self.MAX_COMBINATION_POOL_SIZE
-                valid = self._closest_candidates(
-                    valid, a_amt, self.MAX_COMBINATION_POOL_SIZE,
+                truncated = len(valid) > MAX_COMBINATION_POOL_SIZE
+                valid = _closest_candidates(
+                    valid=valid, 
+                    target=a_amt, 
+                    max_pool=MAX_COMBINATION_POOL_SIZE,
                     counterpart_text=_safe_str(rec, a_text_attr),
                     text_of=lambda r, _attr=m_text_attr: _safe_str(r, _attr),
                 )

@@ -514,5 +514,11 @@ def ai_match(
     same_side: bool = True,
     llm: Optional[ChatOllama] = None,
 ) -> Dict[str, Any]:
-    matcher = AIMatcher(llm=llm, tol=tol, same_side=same_side, config=config)
+    print("Starting [AI matcher] ...")
+    matcher = AIMatcher(
+        llm=llm, 
+        tol=tol, 
+        same_side=same_side, 
+        config=config
+    )
     return matcher.run(result)

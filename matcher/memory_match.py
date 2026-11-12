@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Protocol, Tuple, Set
 
 from schema import RecognizedPattern
 
-from .helper import _STOPWORDS, _INDIAN_PREFIX_RE
+from .utils.helper import _STOPWORDS, _INDIAN_PREFIX_RE, _amounts_equal
 
 _VPA_RE = re.compile(r"@[a-z0-9.\-]+", re.I)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -337,8 +337,23 @@ def memory_matcher(
     amount_tol: float,
 ) -> Tuple[List[dict], list, list]:
     memory_matches: List[dict] = []
-    gl_pool   = list(residual_ledger)
-    bank_pool = list(residual_bank)
+    
+    gl_by_id = {}
+    for record in residual_ledger:
+        record_id = str(getattr(record, "ledger_id", ""))
+        if record_id in gl_by_id:
+            raise ValueError(f"Duplicate ledger ID in memory matching pool: {record_id}")
+        gl_by_id[record_id] = record
+        
+    bank_by_id = {}
+    for record in residual_bank:
+        record_id = str(getattr(record, "row_index", ""))
+        if record_id in bank_by_id:
+            raise ValueError(f"Duplicate bank ID in memory matching pool: {record_id}")
+        bank_by_id[record_id] = record
+        
+    used_ledger: set[str] = set()
+    used_bank: set[str] = set()
 
     def _safe_amt(rec, attr: str) -> float:
         try:
@@ -347,13 +362,15 @@ def memory_matcher(
         except (TypeError, ValueError):
             return 0.0
 
-    for gl in list(gl_pool):
+    for ledger_id, gl in gl_by_id.items():
         gl_debit  = _safe_amt(gl, "debit_amount")
         gl_credit = _safe_amt(gl, "credit_amount")
         account_name = getattr(gl, "account_name", "")
 
         found = None
-        for bank in bank_pool:
+        for bank_id, bank in bank_by_id.items():
+            if bank_id in used_bank:
+                continue
             narration = getattr(bank, "narration", "")
             if not memory.is_recognized(account_name, narration):
                 continue
@@ -363,13 +380,13 @@ def memory_matcher(
 
             if same_side:
                 amt_ok = (
-                    (gl_debit  > 0 and abs(gl_debit  - b_debit)  <= amount_tol) or
-                    (gl_credit > 0 and abs(gl_credit - b_credit) <= amount_tol)
+                    (gl_debit  > 0 and _amounts_equal(gl_debit, b_debit, amount_tol)) or
+                    (gl_credit > 0 and _amounts_equal(gl_credit, b_credit, amount_tol))
                 )
             else:
                 amt_ok = (
-                    (gl_debit  > 0 and abs(gl_debit  - b_credit) <= amount_tol) or
-                    (gl_credit > 0 and abs(gl_credit - b_debit)  <= amount_tol)
+                    (gl_debit  > 0 and _amounts_equal(gl_debit, b_credit, amount_tol)) or
+                    (gl_credit > 0 and _amounts_equal(gl_credit, b_debit, amount_tol))
                 )
 
             if amt_ok:
@@ -396,8 +413,11 @@ def memory_matcher(
                 ),
                 "match_phase": "memory",
             })
-            gl_pool.remove(gl)
-            bank_pool.remove(found)
+            used_ledger.add(ledger_id)
+            used_bank.add(str(getattr(found, "row_index", "")))
 
-    return memory_matches, gl_pool, bank_pool
-
+    return (
+        memory_matches,
+        [record for record_id, record in gl_by_id.items() if record_id not in used_ledger],
+        [record for record_id, record in bank_by_id.items() if record_id not in used_bank],
+    )

@@ -3,13 +3,14 @@ from __future__ import annotations
 from bisect import bisect_left
 from typing import List, Optional, Dict, Any, Tuple
 from schema import BankStatement, LedgerFormat
-from .helper import (
+from .utils.helper import (
     extract_utr,
     text_similarity,
     _get_iso_date_str,
     _safe_amount,
     _safe_str,
     _to_date,
+    _to_paise,
 )
 
 _DEFAULT_AMOUNT_TOL = 0.05
@@ -20,7 +21,7 @@ _NONE_TIER = 0
 
 
 def _cents(x: float) -> int:
-    return int(round(abs(x) * 100))
+    return abs(_to_paise(x))
 
 
 def _date_key(rec: object, is_bank: bool) -> Optional[str]:
@@ -42,7 +43,7 @@ def exact_match(
     tol_c = _cents(amount_tol)
 
     gl_dates = [_date_key(g, False) for g in gl_records]
-    bk_dates = [_date_key[b, True] for b in bank_records]
+    bk_dates = [_date_key(b, True) for b in bank_records]
     
     gl_ref = [_safe_str(g, "reference_id").strip() for g in gl_records]
     bk_ref = [_safe_str(b, "txn_id").strip() for b in bank_records]
@@ -163,4 +164,3 @@ def exact_match(
         "PENDING_FUZZY_LEDGER": pending_ledger,
         "PENDING_FUZZY_BANK": pending_bank,
     }
-

@@ -42,6 +42,7 @@ GL Records + Bank Records
 
 ## Table of Contents
 
+- [API Reference](API_REFERENCE.md)
 - [Module Map](#module-map)
 - [Pipeline Workflow](#pipeline-workflow)
   - [Phase 0 — Same-Side Detection](#phase-0--same-side-detection)
@@ -62,22 +63,23 @@ GL Records + Bank Records
 
 ## Module Map
 
-| File                     | Responsibility                                                              |
-|--------------------------|------------------------------------------------------------------------------|
-| `__init__.py`            | Orchestrates the full pipeline (`reconcile()`), tolerances, quality summary |
-| `same_side_detect.py`    | Infers whether GL debit/credit maps to the same or opposite bank column     |
-| `exact_match.py`         | Phase 1 — strict date/amount/reference matching                             |
-| `fuzzy_match.py`         | Phase 2 — 17 deterministic heuristic-matching strategies                    |
-| `memory_match.py`        | Phase 3 — cross-run pattern memory and persistence backends                |
-| `ai_matcher.py`          | Phase 4 — LLM-backed semantic matcher (1-to-1 and many-to-1)                |
-| `residual_reconciler.py` | Phase 5 — classification, wide-window resolution, journal drafting          |
-| `confidence.py`          | Normalizes confidence values and computes match-quality statistics          |
+| File                                | Responsibility                                                              |
+|-------------------------------------|------------------------------------------------------------------------------|
+| `__init__.py`                       | Orchestrates `reconcile()`, tolerances, and quality summary                 |
+| `same_side_detect.py`               | Infers whether GL debit/credit maps to the same or opposite bank column     |
+| `exact_match.py`                    | Phase 1 — strict date/amount/reference matching                             |
+| `fuzzy_matcher/fuzzy_match.py`      | Phase 2 — 17 deterministic heuristic-matching strategies                   |
+| `memory_match.py`                   | Phase 3 — cross-run pattern memory and persistence backends                 |
+| `ai_matcher/ai_matcher.py`           | Phase 4 — LLM-backed semantic matcher (1-to-1 and many-to-1)                |
+| `ai_matcher/ai_utils.py`            | Shared LLM setup, amount helpers, candidate filtering, and subset search    |
+| `residual_reconciler.py`              | Phase 5 — classification, wide-window resolution, journal drafting          |
+| `utils/confidence.py`                  | Normalizes confidence values and computes match-quality statistics          |
 
 ---
 
 ## Pipeline Workflow
 
-The entry point is `reconcile(ledger_result, bank_result, all_warnings, ...)`
+The entry point is `reconcile(config, ledger_result, bank_result, all_warnings, ...)`
 in `__init__.py`. Each phase consumes the **unmatched residue** of the
 previous phase — records are never re-examined by an earlier phase, and a
 record matched at any phase is removed from every pool downstream.
@@ -101,7 +103,7 @@ relative to the ledger's perspective.
 
 ### Phase 1 — Exact Match
 
-`exact_match.exact_matcher()`
+`exact_match()`
 
 Strict matching on **same calendar date** + **matching amount** (± `EXACT`
 tolerance, default `0.0`). Runs in two passes:
@@ -116,6 +118,9 @@ tolerance, default `0.0`). Runs in two passes:
 Every match records `confirmation_method` (`reference_id`, `narration_utr`,
 or `amount_date_only`) so downstream confidence scoring can distinguish a
 verified match from a coincidental one.
+
+Amounts and tolerances are compared as integer paise, avoiding binary
+floating-point differences in currency comparisons.
 
 **Output:** `EXACT_MATCHES`, plus `PENDING_FUZZY_LEDGER` / `PENDING_FUZZY_BANK`
 (everything not matched) passed to Phase 2.
@@ -152,7 +157,7 @@ Key mechanics:
 - All strategies respect the `TOLERANCES` dict passed in from `__init__.py`.
 - Combination-based strategies (many-to-one, aggregation) cap combination size
   at `MAX_COMBINATION_SIZE = 6` and pre-filter the candidate pool to
-  `MAX_COMBINATION_POOL_SIZE = 15` for performance.
+  `MAX_COMBINATION_POOL_SIZE = 40` for performance.
 - Date windows automatically widen by `_CROSS_MONTH_BUFFER = 15` days when a
   candidate pair straddles a month boundary (common with month-end batch
   postings).
@@ -166,7 +171,7 @@ Key mechanics:
 
 ### Phase 3 — Memory Match
 
-`memory_match.memory_matcher()` using `memory_match.MatchMemory`
+`memory_matcher()` using `MatchMemory`
 
 If a `MatchMemory` instance is supplied, the pipeline checks whether any
 remaining GL/bank pair's **normalized counterparty signature**
@@ -193,21 +198,27 @@ recurring vendor payment).
 
 ### Phase 4 — AI Match
 
-`ai_matcher.ai_matcher_pipeline()`
+`ai_matcher()`
 
 Uses a local LLM (Ollama, `phi3` model by default) for semantic matching that
 heuristics can't express — e.g. narrations that mean the same thing but use
 different vendor abbreviations, word order, or paraphrasing.
+The shared Ollama client uses an 8192-token context window. Client
+initialization errors are logged and surfaced in the AI skip reason rather
+than being deferred as a `None`-client failure.
 
 1. **Connectivity check** — pings the LLM first. If unreachable, the entire
-   phase is skipped gracefully; all residual records are marked
-   `ai_skipped: True` with a reason, and a warning is surfaced. No exception
-   propagates.
-2. **Batch matcher (1-to-1)** — `ai_batch_matcher()`
+   phase is skipped gracefully; the result includes `ai_skipped: True` and
+   the failure reason, and a warning is surfaced. Residual records remain
+   unreconciled. No exception propagates.
+2. **Batch matcher (1-to-1)** — `AIMatcher.batch_match()`
    - Slides a **30-day window** (7-day overlap) across the combined date
      range of remaining records.
-   - Per window, sends up to 20 GL + 20 bank candidate lines (closest to the
-     window midpoint) to the LLM with a strict JSON-only prompt.
+   - Each LLM request contains at most 20 GL and 20 bank records, ordered by
+     proximity to the window midpoint. If a window has more records, all GL
+     and bank chunks are paired so records beyond the first 20 are also
+     considered; chunk pairs without an amount/direction-compatible candidate
+     are skipped.
    - Every proposed match passes two gates before acceptance:
      - **Confidence gate** — must be ≥ `CONFIDENCE_THRESHOLD = 0.75`, else
        routed to `AUDIT_QUEUE` as `LOW_CONFIDENCE`.
@@ -216,11 +227,14 @@ different vendor abbreviations, word order, or paraphrasing.
        LLM hallucinations even after the confidence gate.
    - "Ghost references" (LLM inventing an ID not in the actual candidate
      pool) are logged and discarded.
-3. **Residual matcher (many-to-1)** — `ai_residual_matcher()`, only runs if
-   bank rows remain after the batch pass.
-   - Pre-filters candidate ledger entries per bank row (±10-day window,
-     amount ≤ bank amount + tolerance, capped at 12 candidates) before
-     asking the LLM which subset sums to the bank amount.
+3. **Residual matcher (many-to-1)** —
+   `AIMatcher.residual_match()`, only runs if bank rows remain after the batch
+   pass.
+   - Pre-filters candidate ledger entries per bank row (±10-day window and
+     amount ≤ bank amount + tolerance), then searches subsets of 2–6 entries
+     with bounded work (up to 200,000 search nodes and 20 valid options).
+     The LLM chooses only among amount-verified subsets; an incomplete search
+     is sent to the audit queue instead of being treated as exhaustive.
    - Same confidence gate (≥ 0.75) and a many-to-one bouncer
      (`_passes_many_to_one_bouncer`) that verifies the proposed ledger
      entries actually sum to the bank amount within tolerance and share a
@@ -228,14 +242,18 @@ different vendor abbreviations, word order, or paraphrasing.
 4. Both stages fail safe — a crash in either is caught and simply falls
    through to returning the pool as unreconciled rather than aborting the
    whole reconciliation.
+   LLM construction failures are logged and surfaced in the skip reason;
+   residual journal drafting falls back to heuristic suggestions when the
+   LLM cannot be initialized or reached.
 
 **Output:** `AI_MATCHES` (1-to-1), folded together with `AI_MANY_MATCHES`
 (many-to-1) into `AI_MATCHES`/`AI_AGENT` in the final report; `AI_AUDIT_QUEUE`
-for low-confidence proposals; residual ledger/bank pools passed to Phase 5.
+for low-confidence proposals and incomplete subset searches; residual
+ledger/bank pools passed to Phase 5.
 
 ### Phase 5 — Residual Reconciliation
 
-`residual_reconciler.reconcile_residuals()`
+`residual_reconciler.ResidualReconciler.reconcile_residuals()`
 
 The final phase never tries to force a match — it **classifies** each
 remaining item by the type of evidence available, then applies
@@ -248,7 +266,7 @@ residual item is labeled:
 | Label                        | Meaning                                                                 |
 |-------------------------------|--------------------------------------------------------------------------|
 | `TIMING_CANDIDATE`            | An equal amount exists on the other side, just outside earlier windows  |
-| `SPLIT_CANDIDATE`             | A subset of the other side's amounts sums to this item (cheap probe, ≤4 items) |
+| `SPLIT_CANDIDATE`             | A subset of the other side's amounts sums to this item (cheap probe, up to 4 entries) |
 | `MISSING_ENTRY_CANDIDATE`     | No amount evidence elsewhere — likely genuinely unrecorded              |
 | `UNCLASSIFIABLE`              | No signal found at all (possible data-quality issue)                     |
 
@@ -284,7 +302,7 @@ check next.
 
 ### Confidence Annotation & Quality Summary
 
-`confidence.py` + `__init__._quality_summary()`
+`utils/confidence.py` + `__init__._quality_summary()`
 
 Every match from every phase is passed through
 `annotate_match_confidence()`, which normalizes whatever confidence signal
@@ -331,11 +349,14 @@ operates on a wider, less-certain search space by design.
 ```python
 from matcher import reconcile, MatchMemory
 from matcher.memory_match import JSONFileBackend  # or your own backend
+from core.config import Config
 
+config = Config.from_env()
 warnings = []
 memory = MatchMemory(backend=JSONFileBackend("memory/patterns.json"))
 
 result = reconcile(
+    config=config,
     ledger_result=parsed_ledger,   # {"records": [LedgerFormat, ...]}
     bank_result=parsed_bank,       # {"records": [BankStatement, ...], "bank_name": ..., "template_version": ...}
     all_warnings=warnings,
@@ -383,7 +404,8 @@ The matcher reads typed fields, not arbitrary dictionaries.
   "MEMORY_MATCHES": [...],
   "AI_MATCHES": [...],                  # 1-to-1 + many-to-1, annotated
   "AI_AGENT": [...],                    # alias of AI_MATCHES
-  "AI_AUDIT_QUEUE": [...],              # low-confidence AI proposals
+  "AI_AUDIT_QUEUE": [...],              # low-confidence or incomplete-search proposals
+  "RESIDUAL_TIMING_MATCHES": [...],
   "RESIDUAL_SPLIT_MATCHES": [...],
   "SUGGESTED_JOURNAL_ENTRIES": [...],
   "HUMAN_REVIEW_QUEUE": [...],
@@ -408,17 +430,24 @@ all matches uniformly.
 | `LOW_QUALITY_CONFIDENCE_BAR`           | `__init__.py`            | `0.5`   | Threshold for "low confidence" in the quality summary |
 | `_CONFIDENCE_RATIO`                    | `same_side_detect.py`    | `0.65`  | Vote share needed to be "confident" on orientation   |
 | `_MIN_MATCHED_PAIRS`                   | `same_side_detect.py`    | `3`     | Minimum sample votes before rendering an opinion     |
-| `MAX_COMBINATION_SIZE`                 | `fuzzy_match.py`         | `6`     | Max items considered in a many-to-one combination    |
-| `MAX_COMBINATION_POOL_SIZE`            | `fuzzy_match.py`         | `15`    | Candidate pool size before combination search         |
-| `_CROSS_MONTH_BUFFER`                  | `fuzzy_match.py`         | `15`    | Extra days allowed when a match spans month-end       |
-| `CONFIDENCE_THRESHOLD`                 | `ai_matcher.py`          | `0.75`  | Minimum LLM confidence to accept (else → audit queue) |
-| `CANDIDATE_DATE_WINDOW_DAYS`           | `ai_matcher.py`          | `10`    | Many-to-1 candidate pre-filter window                 |
-| `MAX_RECORDS_PER_WINDOW`               | `ai_matcher.py`          | `20`    | Max ledger/bank records sent per AI batch window       |
-| `WINDOW_OVERLAP_DAYS`                  | `ai_matcher.py`          | `7`     | Overlap between successive 30-day batch windows       |
-| `TIMING_WINDOW_DAYS`                   | `residual_reconciler.py` | `45`    | Wide-window timing resolution horizon                 |
-| `SPLIT_MAX_COMBINATION_SIZE`           | `residual_reconciler.py` | `8`     | Max items in Phase-5 split-sum search                 |
-| `NARRATION_SIMILARITY_THRESHOLD`       | `residual_reconciler.py` | `0.6`   | Minimum text similarity to count as a "narration signal" |
-| `EXISTENCE_AMOUNT_TOLERANCE`           | `residual_reconciler.py` | `1.0`   | Amount tolerance used during residual classification  |
+| `MAX_COMBINATION_SIZE`                 | `fuzzy_matcher/fuzzy_match.py` | `6`       | Max items considered in a many-to-one combination |
+| `MAX_COMBINATION_POOL_SIZE`            | `fuzzy_matcher/fuzzy_match.py` | `40`      | Candidate pool size before combination search |
+| `_CROSS_MONTH_BUFFER`                  | `fuzzy_matcher/fuzzy_match.py` | `15`      | Extra days allowed when a match spans month-end |
+| `CONFIDENCE_THRESHOLD`                 | `ai_matcher/ai_matcher.py`      | `0.75`    | Minimum LLM confidence to accept (else → audit queue) |
+| `CANDIDATE_DATE_WINDOW_DAYS`           | `ai_matcher/ai_matcher.py`      | `10`      | Many-to-1 candidate pre-filter window |
+| `BATCH_WINDOW_DAYS`                    | `ai_matcher/ai_matcher.py`      | `30`      | Calendar-day span of each 1-to-1 AI window |
+| `MAX_RECORDS_PER_WINDOW`               | `ai_matcher/ai_matcher.py`      | `20`      | Max ledger and bank records per AI request |
+| `WINDOW_OVERLAP_DAYS`                  | `ai_matcher/ai_matcher.py`      | `7`       | Overlap between successive AI windows |
+| `MAX_SUBSET_SIZE`                      | `ai_matcher/ai_utils.py`       | `6`       | Max ledger records in an AI residual subset |
+| `MAX_SUBSET_OPTIONS`                   | `ai_matcher/ai_utils.py`       | `20`      | Max verified residual subsets offered to the LLM |
+| `MAX_SUBSET_SEARCH_NODES`              | `ai_matcher/ai_utils.py`       | `200,000` | Work bound for AI residual subset search |
+| `TIMING_WINDOW_DAYS`                   | `residual_reconciler.py` | `45`  | Wide-window timing resolution horizon |
+| `SPLIT_TOLERANCE`                      | `residual_reconciler.py` | `2.0` | Amount tolerance used in residual split searches |
+| `SPLIT_MAX_COMBINATION_SIZE`           | `residual_reconciler.py` | `8`   | Max items in Phase-5 split-sum search |
+| `SPLIT_PROBE_MAX_SIZE`                 | `residual_reconciler.py` | `4`   | Max subset size in the initial split classification probe |
+| `SPLIT_POOL_PREFILTER_THRESHOLD`       | `residual_reconciler.py` | `50`  | Pool size above which split candidates are prefiltered |
+| `NARRATION_SIMILARITY_THRESHOLD`       | `residual_reconciler.py` | `0.6` | Minimum text similarity to count as a narration signal |
+| `EXISTENCE_AMOUNT_TOLERANCE`           | `residual_reconciler.py` | `1.0` | Amount tolerance used during residual classification |
 
 ---
 
@@ -446,8 +475,7 @@ all matches uniformly.
   `save()`) and pass an instance to `MatchMemory(backend=...)`.
 - **Swap the LLM**: pass any object exposing `.invoke()` compatible with
   LangChain's chat model interface as the `llm=` argument to `reconcile()` —
-  it's threaded through to both `ai_matcher_pipeline()` and
-  `reconcile_residuals()`.
+  it is passed to the AI matcher and `reconcile_residuals()`.
 - **Tune aggressiveness**: adjust `TOLERANCES` in `__init__.py` for
-  phases 1–3, or the module-level constants in `ai_matcher.py` /
+  phases 1–3, or the module-level constants in `ai_matcher/ai_matcher.py` /
   `residual_reconciler.py` for phases 4–5.

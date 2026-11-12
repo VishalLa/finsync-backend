@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import logging
 from datetime import  datetime
 from typing import List, Dict, Any, Optional, Tuple, Union
 
@@ -11,25 +12,30 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from core.config import Config
 from schema import LedgerFormat, BankStatement
-from core.config import Config
+from ..fuzzy_matcher.subset_sum import find_subsets
+from ..utils.helper import _amounts_equal, _to_paise
 
-MAX_CANDIDATES: int = 12
+MAX_SUBSET_OPTIONS: int = 20
+MAX_SUBSET_SEARCH_NODES: int = 200_000
+MAX_SUBSET_SIZE: int = 6
 
 # Shared LLM instance
 _SHARED_LLM: Optional[ChatOllama] = None
+logger = logging.getLogger(__name__)
 
-def _prepare_llm(config: Config) -> Optional[ChatOllama]:
+
+def _prepare_llm(config: Config) -> ChatOllama:
     try:
         return ChatOllama(
             model=config.OLLAMA_NAME,
             temperature=0.0,
-            num_ctx=8129,
+            num_ctx=8192,
             repeat_penalty=1.1,
             base_url=config.OLLAMA_URL
         )
-    except Exception as e:
-        print(f"Error while creating instance of ChatOllama: {e}")
-        return None
+    except Exception as exc:
+        logger.exception("Failed to initialize ChatOllama")
+        raise RuntimeError(f"Failed to initialize ChatOllama: {exc}") from exc
 
 def get_shared_llm(config: Config) -> ChatOllama:
     global _SHARED_LLM
@@ -148,11 +154,54 @@ def _filter_candidates_for_bank(
             continue
 
         gl_amt, _ = _get_direction_amount(gl)
-        if gl_amt <= bk_amt + tol:
+        if _to_paise(gl_amt) <= _to_paise(bk_amt) + _to_paise(tol):
             scored.append((day_diff, gl))
 
     scored.sort(key=lambda x: x[0])
-    return [gl for _, gl in scored[:MAX_CANDIDATES]]
+    return [gl for _, gl in scored]
+
+
+def _find_candidate_subsets_for_bank(
+    bank: BankStatement,
+    ledger_pool: List[LedgerFormat],
+    date_window: int,
+    tol: float,
+    same_side: bool = True,
+) -> Tuple[List[Tuple[LedgerFormat, ...]], bool]:
+    bank_amount, bank_direction = _get_direction_amount(bank)
+    if bank_amount <= 0:
+        return [], True
+
+    candidates = []
+    for ledger in _filter_candidates_for_bank(bank, ledger_pool, date_window, tol):
+        ledger_amount, ledger_direction = _get_direction_amount(ledger)
+        if ledger_amount <= 0 or not _directions_compatible(
+            ledger_direction, bank_direction, same_side
+        ):
+            continue
+        candidates.append(ledger)
+
+    if len(candidates) < 2:
+        return [], True
+
+    candidate_amounts = [
+        int(round(_get_direction_amount(ledger)[0] * 100))
+        for ledger in candidates
+    ]
+    search = find_subsets(
+        candidate_amounts,
+        target=int(round(bank_amount * 100)),
+        tol=int(round(tol * 100)),
+        min_size=2,
+        max_size=MAX_SUBSET_SIZE,
+        max_nodes=MAX_SUBSET_SEARCH_NODES,
+        max_solutions=MAX_SUBSET_OPTIONS + 1,
+    )
+    subsets = [
+        tuple(candidates[index] for index in indexes)
+        for indexes in search.solutions
+    ]
+    return subsets, search.exhaustive
 
 
 # 1-to-1 Math Bouncer
@@ -166,7 +215,7 @@ def _passes_1to1_bouncer(
     bk_amt, bk_dir = _get_direction_amount(bk_item)
 
     diff = abs(gl_amt - bk_amt)
-    if diff > tol:
+    if not _amounts_equal(gl_amt, bk_amt, tol):
         return False, (
             f"Amount mismatch: GL={gl_amt:.2f} Bank={bk_amt:.2f} "
             f"diff={diff:.2f} exceeds tol={tol:.2f}"
@@ -193,7 +242,7 @@ def _passes_many_to_one_bouncer(
         return False, "No ledger items resolved from suggested IDs."
 
     bk_amt, bk_dir = _get_direction_amount(bk_item)
-    gl_total = 0.0
+    gl_total_paise = 0
 
     for gl in gl_items:
         gl_amt, gl_dir = _get_direction_amount(gl)
@@ -202,12 +251,13 @@ def _passes_many_to_one_bouncer(
                 f"Direction mismatch on {gl.ledger_id}: "
                 f"GL is {gl_dir}, Bank is {bk_dir}"
             )
-        gl_total += gl_amt
+        gl_total_paise += _to_paise(gl_amt)
 
-    diff = abs(gl_total - bk_amt)
-    if diff > tol:
+    diff_paise = abs(gl_total_paise - _to_paise(bk_amt))
+    if diff_paise > _to_paise(tol):
+        diff = diff_paise / 100
         return False, (
-            f"Sum mismatch: ΣGL={gl_total:.2f} Bank={bk_amt:.2f} "
+            f"Sum mismatch: ΣGL={gl_total_paise / 100:.2f} Bank={bk_amt:.2f} "
             f"diff={diff:.2f} exceeds tol={tol:.2f}"
         )
 

@@ -1,9 +1,9 @@
 from typing import List, Optional
 
-from .fuzzy_match import fuzzy_matcher
-from .exact_match import exact_match
-from .ai_matcher import ai_matcher
-from .confidence import annotate_match_confidence
+from .fuzzy_matcher import fuzzy_matcher
+from .exact_match import exact_match as exact_matcher
+from .ai_matcher.ai_matcher import ai_match
+from .utils.confidence import annotate_match_confidence
 from .same_side_detect import detect_same_side
 from .memory_match import memory_matcher, MatchMemory
 from .residual_reconciler import reconcile_residuals
@@ -79,14 +79,13 @@ def reconcile(
         if detection.confident:
             if detection.same_side != same_side:
                 all_warnings.append(
-                    f"Detected ledger/bank orientation differs from the "
-                    f"configured same_side={same_side}; using "
-                    f"same_side={detection.same_side} based on "
-                    f"{detection.reason}."
+                    f"Detected ledger/bank orientation same_side="
+                    f"{detection.same_side}, which differs from the configured "
+                    f"same_side={same_side}; continuing with the configured "
+                    f"value. Detection reason: {detection.reason}."
                 )
-            same_side = detection.same_side
 
-    exact_match_result = exact_match(
+    exact_match_result = exact_matcher(
         gl_records=gl_records,
         bank_records=bank_records,
         same_side=same_side,
@@ -120,7 +119,7 @@ def reconcile(
         "MATCHED":             [],
     }
 
-    ai_pipeline_output = ai_matcher(
+    ai_pipeline_output = ai_match(
         config=config,
         result=ai_input_payload,
         tol=TOLERANCES.get("AI_MATCHER", 5.0),
@@ -154,6 +153,7 @@ def reconcile(
         residual_result = reconcile_residuals(
             unreconciled_ledger=final_unreconciled["ledger"],
             unreconciled_bank=final_unreconciled["bank"],
+            config=config,
             same_side=same_side,
             llm=llm,
         )

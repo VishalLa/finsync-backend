@@ -1,25 +1,30 @@
 from __future__ import annotations
 
-import itertools
+from datetime import date, timedelta
 from bisect import bisect_left, bisect_right
 from functools import lru_cache, partial
 from typing import Any, Callable, List, Optional, Tuple, Set, Dict
 
 from schema import BankStatement, LedgerFormat, IgnoredMetadataRecord, AuditInvestigationItem
-from .helper import (
+
+from .subset_sum import find_subsets
+
+from .business_calendar import BusinessCalendar
+from ..utils.helper import (
     _NSF_RE,
     _INTEREST_RE,
     _REVERSAL_RE,
+    MAX_COMBINATION_POOL_SIZE,
     
     _safe_amount,
     _safe_str,
     _get_amt,
     _get_date,
     _amounts_equal,
-    _days_between,
     _crosses_month_boundary,
     _digit_multiset,
     _to_date,
+    _closest_candidates,
 
     text_similarity as _text_similarity,
     is_transposition,
@@ -38,7 +43,7 @@ class _AmountIndex:
     """Sorted (amount, idx) list. between(lo, hi) -> idx list via binary search.
         It only *prunes*; callers still re-apply the original exact predicate."""
     
-    __slots__ = ("keys", "_ids")
+    __slots__ = ("_keys", "_ids")
     def __init__(self, pairs) -> None:
         pairs = sorted(pairs)
         self._keys = [p[0] for p in pairs]
@@ -49,9 +54,12 @@ class _AmountIndex:
         j = bisect_right(self._keys, hi + _EPS)
         return self._ids[i:j]
 
+
 class FuzzyMatcher:
     MAX_COMBINATION_SIZE: int = 6   
-    MAX_COMBINATION_POOL_SIZE: int = 15
+    
+    SUBSET_MAX_NODES: int = 200_000
+    SUBSET_MAX_SOLUTIONS: int = 300
 
     _CROSS_MONTH_BUFFER: int = 15
 
@@ -60,11 +68,12 @@ class FuzzyMatcher:
         pending_ledger: List[LedgerFormat],
         pending_bank:   List[BankStatement],
         same_side:      bool = True,
-        tolerances:     dict[str, float | int] = None,
+        tolerances:     Dict[str, float | int] = None,
+        calendar:       Optional[BusinessCalendar] = None
     ) -> None:
         self.ledger_pool:   List[LedgerFormat]  = list(pending_ledger)
         self.bank_pool:     List[BankStatement] = list(pending_bank)
-        self.fuzzy_matches: List[dict]          = []
+        self.fuzzy_matches: List[Dict[str, Any]]= []
 
         self.ignored_metadata_records:  List[IgnoredMetadataRecord]  = []
         self.audit_investigation_items: List[AuditInvestigationItem] = []
@@ -88,6 +97,9 @@ class FuzzyMatcher:
 
         self.bank_out: Callable[[BankStatement], float] = lambda b: _safe_amount(b, "debit_amount")
         self.bank_in:  Callable[[BankStatement], float] = lambda b: _safe_amount(b, "credit_amount")
+        
+        self._cal: BusinessCalendar = calendar if calendar is not None else BusinessCalendar.india_banks()
+        self._prepare_calendar()
 
 
     def _effective_window(
@@ -101,41 +113,9 @@ class FuzzyMatcher:
         return base_window
 
 
-    @staticmethod
-    def _closest_candidates(
-        valid:          List[tuple],
-        target:         float,
-        max_pool:       int,
-        counterpart_text: str = "",
-        text_of:        Optional[Callable[[Any], str]] = None,
-    ) -> List[tuple]:
-        if len(valid) <= max_pool or target <= 0:
-            return valid
-
-        max_k = 6  
-
-        def amount_distance(amount: float) -> float:
-            return min(abs(amount - target / k) for k in range(2, max_k + 1))
-
-        def sim_score(record: Any) -> float:
-            if not text_of or not counterpart_text:
-                return 0.0
-            return text_similarity(counterpart_text, text_of(record))
-
-        max_dist = max((amount_distance(x[1]) for x in valid), default=1.0) or 1.0
-
-        def combined_score(item: tuple) -> float:
-            record, amount = item
-            sim = sim_score(record)
-            dist_norm = amount_distance(amount) / max_dist
-            return (sim * 2.0) + (1.0 - dist_norm)
-
-        ranked = sorted(valid, key=combined_score, reverse=True)
-        return ranked[:max_pool]
-
-
     def cleanse_zero_amount_metadata(self) -> None:
-        for bk in list(self.bank_pool):
+        remaining_bank = []
+        for bk in self.bank_pool:
             if abs(_get_amt(bk)) <= 0.001:
                 self.ignored_metadata_records.append(
                     IgnoredMetadataRecord(
@@ -144,9 +124,12 @@ class FuzzyMatcher:
                         narration = getattr(bk, "narration", "OPENING/CLOSING BALANCE"),
                     )
                 )
-                self.bank_pool.remove(bk)
+            else:
+                remaining_bank.append(bk)
+        self.bank_pool = remaining_bank
 
-        for gl in list(self.ledger_pool):
+        remaining_ledger = []
+        for gl in self.ledger_pool:
             if abs(_get_amt(gl)) <= 0.001:
                 self.ignored_metadata_records.append(
                     IgnoredMetadataRecord(
@@ -155,7 +138,9 @@ class FuzzyMatcher:
                         narration = getattr(gl, "account_name", "Header/Metadata Row"),
                     )
                 )
-                self.ledger_pool.remove(gl)
+            else:
+                remaining_ledger.append(gl)
+        self.ledger_pool = remaining_ledger
 
 
     def flag_ghost_reversals(self) -> None:
@@ -183,9 +168,24 @@ class FuzzyMatcher:
     _W_REF:  float = 3.0   # bonus when reference_id == txn_id
     _MAX_EDGES_PER_RECORD: int = 50   # safety valve for pathological duplicates
     
+    ALLOW_BANK_BEFORE_LEDGER: bool = True
+    TIMING_EARLY_BD: int = 3   # deposit-in-transit / outstanding-cheque strategies
+    COMBO_EARLY_BD:  int = 2   # aggregated / many-to-one strategies
+    _MAX_EDGES_PER_RECORD: int = 50   # safety valve for pathological duplicates
+    
+    def _prepare_calendar(self) -> None:
+        ds = [_to_date(_safe_str(g, "transaction_date")) for g in self.ledger_pool]
+        ds += [_to_date(_safe_str(b, "date")) for b in self.bank_pool]
+        ds = [d for d in ds if d is not None]
+        if ds:
+            self._cal.prepare(min(ds), max(ds))
+            
+    def _lag(self, ledger_date, bank_date) -> int:
+        """Signed business-day lag of the bank date relative to the ledger date (+ = bank later)."""
+        return self._cal.lag(ledger_date, bank_date)
+    
     def _dates(self, recs: List[Any], attr: str) -> list:
         return[_to_date(_safe_str(r, attr)) for r in recs]
-    
     
     def _win(self, base: int, da, db) -> int:
         """Date-object version of _effective_window (no re-parsing)."""
@@ -272,8 +272,8 @@ class FuzzyMatcher:
             match, audit = build()
             self.fuzzy_matches.append(match)
             
-            if audit is None:
-                self.audit_investigation_items.append(audit)     
+            if audit is not None:
+                self.audit_investigation_items.append(audit)
                 
     def _rebuild_pools(
         self,
@@ -321,45 +321,53 @@ class FuzzyMatcher:
         
         
     def _match_timing(
-        self, *, gl_amt_of, bank_amt_of, base_window: int, adj_type: str, high_days: int, verb: str
-        ) -> None:
-            gls, bks = list(self.ledger_pool), list(self.bank_pool)
-            gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
-            tol = self._tol_timing
-            index = _AmountIndex(
-                (bank_amt_of(b), j) 
-                for j, b in enumerate(bks) 
-                if bank_amt_of(b) > 0 and bk_dt[j]
-            )
+        self, *, gl_amt_of, bank_amt_of, base_window: int, adj_type: str, early_adj_type: str, high_days: int, verb: str
+    ) -> None:
+        gls, bks = list(self.ledger_pool), list(self.bank_pool)
+        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
+        tol = self._tol_timing
+        index = _AmountIndex(
+            (bank_amt_of(b), j) for j, b in enumerate(bks) if bank_amt_of(b) > 0 and bk_dt[j]
+        )
+
+        edges: List[Edge] = []
+        for i, gl in enumerate(gls):
+            g_amt = gl_amt_of(gl)
+            if g_amt <= 0 or gl_dt[i] is None:
+                continue
             
-            edges: List[Edge] = []
-            for i, gl in enumerate(gls):
-                g_amt = gl_amt_of(gl)
-                if g_amt <= 0 or gl_dt[i] is None:
+            local: List[Edge] = []
+            for j in index.between(g_amt - tol, g_amt + tol):
+                bank = bks[j]
+                b_amt = bank_amt_of(bank)
+                if not _amounts_equal(g_amt, b_amt, tol):
                     continue
                 
-                local: List[Edge] = []
-                for j in index.between(g_amt - tol, g_amt + tol):
-                    bank = bks[j]
-                    b_amt = bank_amt_of(bank)
-                    
-                    if not _amounts_equal(g_amt, b_amt, tol):
+                cal_days = (bk_dt[j] - gl_dt[i]).days
+                lag = self._lag(gl_dt[i], bk_dt[j])
+                if cal_days >= 1:                                   # bank after ledger (the normal case)
+                    if lag > self._win(base_window, gl_dt[i], bk_dt[j]):
                         continue
                     
-                    diff = (bk_dt[j] - gl_dt[i]).days
-                    if not (1 <= diff <= self._win(base_window, gl_dt[i], bk_dt[j])):
+                    early = False
+                elif cal_days <= -1 and self.ALLOW_BANK_BEFORE_LEDGER:   # bank BEFORE ledger
+                    if -lag > self.TIMING_EARLY_BD:
                         continue
+                    early = True
                     
-                    sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
-                    score = self._time_score(sim, diff, abs(g_amt - b_amt), tol, self._ref_equal(gl, bank))
-                    local.append((
-                        score, (i,), (j,), 
-                        partial(
-                            self._build_timing, gl, bank, g_amt, diff, adj_type, high_days, verb
-                        )
-                    ))
-                self._extend_capped(edges=edges, local=local)
-            self._assign(edges=edges, gls=gls, bks=bks)
+                else:                                               # same calendar day: exact/rounding phases
+                    continue
+                
+                sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
+                score = self._timing_score(sim, lag, abs(g_amt - b_amt), tol, self._ref_equal(gl, bank), early)
+                local.append((
+                    score, (i,), (j,), partial(
+                        self._build_timing, gl, bank, g_amt, lag, cal_days, adj_type, early_adj_type, high_days, verb, early, sim
+                    )
+                ))
+            self._extend_capped(edges, local)
+        self._assign(edges, gls, bks)
+
             
     def match_deposit_in_transit(self) -> None:
         self._match_timing(
@@ -420,7 +428,7 @@ class FuzzyMatcher:
             for j in index.between(g, g + max(_MAX_PLAUSIBLE_FEE, 0.15 * g)):
                 bank = bks[j]
                 
-                diff = (bk_dt[j] - gl_dt[i]).days
+                diff = self._lag(gl_dt[i], bk_dt[j])
                 if abs(diff) > self._win(3, gl_dt[i], bk_dt[j]):
                     continue
                 
@@ -558,7 +566,7 @@ class FuzzyMatcher:
                 if b_amt <= 0 or not is_transposition(gl_amt, b_amt, self._tol_transpos):
                     continue
                 
-                diff = (bk_dt[j] - gl_dt[i]).days
+                diff = self._lag(gl_dt[i], bk_dt[j])
                 if abs(diff) > self._win(3, gl_dt[i], bk_dt[j]):
                     continue
                 
@@ -623,7 +631,7 @@ class FuzzyMatcher:
                 if b_amt <= 0 or not (0.0 < diff_amt <= tol):
                     continue
                 
-                diff_days = (bk_dt[j] - gl_dt[i]).days
+                diff_days = self._lag(gl_dt[i], bk_dt[j])
                 if abs(diff_days) > self._win(3, gl_dt[i], bk_dt[j]):
                     continue
                 
@@ -700,11 +708,16 @@ class FuzzyMatcher:
 
     # Strategy 8 - Interest Income (standalone bank credit)
     def match_interest_income(self) -> None:
-        for bank in list(self.bank_pool):
+        remaining_bank = []
+        for bank in self.bank_pool:
             if self.bank_in(bank) <= 0:
+                remaining_bank.append(bank)
                 continue
+
             if not _INTEREST_RE.search(_safe_str(bank, "narration")):
+                remaining_bank.append(bank)
                 continue
+
             self.fuzzy_matches.append({
                 "ledger_id":        None,
                 "bank_id":          getattr(bank, "row_index", None),
@@ -716,7 +729,8 @@ class FuzzyMatcher:
                     f"add {self.bank_in(bank):.2f} to book balance via journal entry."
                 ),
             })
-            self.bank_pool.remove(bank)
+
+        self.bank_pool = remaining_bank
 
 
     # Strategy 9 - Discounts and Tax Withholdings
@@ -782,7 +796,7 @@ class FuzzyMatcher:
                     if not any(abs(implied - r) < 0.001 for r in self._COMMON_DISCOUNT_RATES):
                         continue
                     
-                    diff = (bk_dt[j] - gl_dt[i]).days
+                    diff = self._lag(gl_dt[i], bk_dt[j])
                     if abs(diff) > self._win(5, gl_dt[i], bk_dt[j]):
                         continue
                     
@@ -1005,9 +1019,13 @@ class FuzzyMatcher:
                 m_amt_of = m_out if is_out else m_in
 
                 valid, idx_of = [], {}
-                da = a_dt[a].toordinal()
-                reach = base_window + self._CROSS_MONTH_BUFFER          # widest window we can ever accept
-                lo, hi = (da, da + reach) if anchor_is_gl else (da - reach, da)
+                widest = base_window + self._CROSS_MONTH_BUFFER
+                early_bd = self.COMBO_EARLY_BD if self.ALLOW_BANK_BEFORE_LEDGER else 0
+                if anchor_is_gl:
+                    lo_d, hi = self._cal.date_bounds(a_dt[a], -early_bd, widest)
+                else:
+                    lo_d, hi_d = self._cal.date_bounds(a_dt[a], -widest, early_bd)
+                lo, hi = lo_d.toordinal(), hi_d.toordinal()
                 ks = sorted(m_order[q][1] for q in range(bisect_left(m_keys, lo), bisect_right(m_keys, hi)))
                 for k in ks:
                     m = members[k]
@@ -1019,15 +1037,17 @@ class FuzzyMatcher:
                         continue
                     
                     # diff is always bank_date - ledger_date (as in the original)
-                    diff = (m_dt[k] - a_dt[a]).days if anchor_is_gl else (a_dt[a] - m_dt[k]).days
                     d_gl, d_bk = (a_dt[a], m_dt[k]) if anchor_is_gl else (m_dt[k], a_dt[a])
-                    if 0 <= diff <= self._win(base_window, d_gl, d_bk):
+                    lag = self._lag(d_gl, d_bk)
+                    if -early_bd <= lag <= self._win(base_window, d_gl, d_bk):
                         valid.append((m, amt))
                         idx_of[id(m)] = k
 
-                truncated = len(valid) > self.MAX_COMBINATION_POOL_SIZE
-                valid = self._closest_candidates(
-                    valid, a_amt, self.MAX_COMBINATION_POOL_SIZE,
+                truncated = len(valid) > MAX_COMBINATION_POOL_SIZE
+                valid = _closest_candidates(
+                    valid=valid, 
+                    target=a_amt, 
+                    max_pool=MAX_COMBINATION_POOL_SIZE,
                     counterpart_text=_safe_str(rec, a_text_attr),
                     text_of=lambda r, _attr=m_text_attr: _safe_str(r, _attr),
                 )
@@ -1051,17 +1071,26 @@ class FuzzyMatcher:
                 # (so one good row padded with unrelated rows scores poorly), with a small
                 # preference for fewer items. Acceptance gate is unchanged: max similarity > 0.15.
                 best = None           # (score, tie, combo)
-                cap = min(self.MAX_COMBINATION_SIZE + 1, len(valid) + 1)
-                for r in range(2, cap):
-                    for combo in self._combos_with_sum(valid, a_amt, r):
-                        sims = [sim_of(x[0]) for x in combo]
-                        if max(sims) <= 0.15:
-                            continue
-                        
-                        score = sum(sims) / r - 0.02 * (r - 2)
-                        if best is None or score > best[0] + 1e-12:
-                            best = (score, 0, combo)
-                            
+                search = find_subsets(
+                    [int(round(x[1]*100)) for x in valid],
+                    int(round(a_amt * 100)),
+                    int(round(self._tol * 100)),
+                    min_size=2,
+                    max_size=self.MAX_COMBINATION_SIZE,
+                    max_nodes=self.SUBSET_MAX_NODES,
+                    max_solutions=self.SUBSET_MAX_SOLUTIONS
+                )
+                for sel in search.solutions:
+                    combo = tuple(valid[i] for i in sel)
+                    r = len(combo)
+                    sims = [sim_of(x[0] for x in combo)]
+                    if max(sims) <= 0.15:
+                        continue
+                    
+                    score = sum(sims) / r - 0.02 * (r - 2)
+                    if best is None or score > best[0] + 1e-12:
+                        best = (score, 0, combo)
+                
                 if best is None:
                     continue
                 
@@ -1205,7 +1234,7 @@ class FuzzyMatcher:
                 if amt_of(b) > 0 and bk_dt[j] is not None
                 and (
                     self.FEE_TAX_GL_WINDOW_DAYS is None or 
-                    abs((bk_dt[j] - gl_dt[i]).days) <= self.FEE_TAX_GL_WINDOW_DAYS
+                    abs(self._lag(gl_dt[i], bk_dt[j])) <= self.FEE_TAX_GL_WINDOW_DAYS
                 )
             ]
             index = _AmountIndex(cand)
@@ -1221,7 +1250,7 @@ class FuzzyMatcher:
                     if not _amounts_equal(a1 + a2, gl_amt, self._tol):
                         continue
                     
-                    gap = (bk_dt[j2] - bk_dt[j1]).days
+                    gap = self._lag(bk_dt[j1], bk_dt[j2])
                     adjacency = self._win(base_adjacency_days, bk_dt[j1], bk_dt[j2])
                     if abs(gap) > adjacency:
                         continue

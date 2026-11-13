@@ -48,5 +48,6 @@ def create_celery(
     app.conf.broker_transport_options = {"visibility_timeout": 7200}
 
     app.conf.broker_connection_retry_on_startup = True
+    return app
 
 celery_app = create_celery(config=Config.from_env())

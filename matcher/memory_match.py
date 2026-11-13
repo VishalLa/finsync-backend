@@ -250,7 +250,7 @@ class MatchMemory:
             if not _has_core(common):
                 continue
             
-            new_sig = " ".join(stored(common))
+            new_sig = " ".join(sorted(common))
             if new_sig != p.bank_signature:
                 self._patterns.pop(
                     _pattern_key(

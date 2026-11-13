@@ -55,13 +55,17 @@ class ResidualReconciler:
         llm: Optional[ChatOllama] = None,
         same_side: bool = True,
         calendar: Optional[BusinessCalendar] = None,
+        enable_llm: bool = True,
     ) -> None:
         self.ledger_pool: List[LedgerFormat] = list(pending_ledger)
         self.bank_pool: List[BankStatement] = list(pending_bank)
         self.residual_matches: List[Dict[str, Any]] = []
         self.same_side = same_side
         self.config = config
-        self.llm = llm if llm is not None else get_shared_llm(config=self.config)
+        self.enable_llm = enable_llm
+        self.llm = llm if llm is not None else (
+            get_shared_llm(config=self.config) if enable_llm else None
+        )
         
         self._cal: BusinessCalendar = (
             calendar if calendar is not None else BusinessCalendar.india_banks()
@@ -538,15 +542,18 @@ class ResidualReconciler:
         if not missing_bank:
             return [], [], False, None
 
-        llm_available = True
+        llm_available = self.enable_llm
         skip_reason: Optional[str] = None
-        try:
-            if self.llm is None:
-                self.llm = get_shared_llm(config=self.config)
-            self.llm.invoke("ping")
-        except Exception as conn_err:
-            llm_available = False
-            skip_reason = str(conn_err)
+        if not self.enable_llm:
+            skip_reason = "AI drafting disabled by caller"
+        else:
+            try:
+                if self.llm is None:
+                    self.llm = get_shared_llm(config=self.config)
+                self.llm.invoke("ping")
+            except Exception as conn_err:
+                llm_available = False
+                skip_reason = str(conn_err)
 
         drafts: List[dict] = []
         still_unresolved: List[Dict[str, Any]] = []
@@ -679,7 +686,6 @@ class ResidualReconciler:
         return queue
 
     def reconcile_residuals(self) -> dict:
-        print("Residual Reconciliation (Phase 4)")
 
         classified = self.classify_residuals()
 
@@ -749,12 +755,13 @@ def reconcile_residuals(
     config: Config,
     same_side: bool = True,
     llm=None,
+    enable_llm: bool = True,
 ) -> dict:
-    print()
     return ResidualReconciler(
         pending_ledger=unreconciled_ledger,
         pending_bank=unreconciled_bank,
         config=config,
         llm=llm,
         same_side=same_side,
+        enable_llm=enable_llm,
     ).reconcile_residuals()

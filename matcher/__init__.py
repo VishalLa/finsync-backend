@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from .fuzzy_matcher import fuzzy_matcher
+from .fuzzy_matcher.fuzzy_match import fuzzy_matcher
 from .exact_match import exact_match as exact_matcher
 from .ai_matcher.ai_matcher import ai_match
 from .utils.confidence import annotate_match_confidence
@@ -69,11 +69,13 @@ def reconcile(
     auto_detect_same_side: bool = True,
     memory:  Optional["MatchMemory"] = None,
     llm: Optional[ChatOllama] = None,
+    enable_ai_matching: bool = True,
     enable_residual_reconciliation: bool = True
 ) -> dict:
     gl_records   = ledger_result["records"]
     bank_records = bank_result["records"]
 
+    print("[reconcile] Phase 0: same-side detection starting")
     if auto_detect_same_side:
         detection = detect_same_side(gl_records, bank_records)
         if detection.confident:
@@ -84,26 +86,33 @@ def reconcile(
                     f"same_side={same_side}; continuing with the configured "
                     f"value. Detection reason: {detection.reason}."
                 )
+    else:
+        print("[reconcile] Phase 0: same-side detection skipped")
 
+    print(f"[reconcile] Phase 1: exact matching starting ({len(gl_records)} ledger, {len(bank_records)} bank)")
     exact_match_result = exact_matcher(
         gl_records=gl_records,
         bank_records=bank_records,
         same_side=same_side,
         amount_tol=TOLERANCES.get("EXACT", 0.0)
     )
+    print(f"[reconcile] Phase 1: exact matching complete ({len(exact_match_result.get('EXACT_MATCHES', []))} matches)")
 
+    print("[reconcile] Phase 2: fuzzy matching starting")
     fuzzy_match_result = fuzzy_matcher(
         pending_ledger=exact_match_result.get("PENDING_FUZZY_LEDGER", []),
         pending_bank=exact_match_result.get("PENDING_FUZZY_BANK", []),
         tolerances=TOLERANCES,
         same_side=same_side
     )
+    print(f"[reconcile] Phase 2: fuzzy matching complete ({len(fuzzy_match_result.get('FUZZY_MATCHES', []))} matches)")
 
     residual_ledger = fuzzy_match_result["UNRECONCILED_ITEMS"]["ledger"]
     residual_bank   = fuzzy_match_result["UNRECONCILED_ITEMS"]["bank"]
 
     memory_matches: List[dict] = []
 
+    print("[reconcile] Phase 3: memory matching starting")
     if memory is not None and residual_ledger and residual_bank:
         memory_matches, residual_ledger, residual_bank = memory_matcher(
             residual_bank=residual_bank,
@@ -112,6 +121,11 @@ def reconcile(
             same_side=same_side,
             amount_tol=TOLERANCES.get("TIMING_DIFFERENCE", 2.0),
         )
+        print(f"[reconcile] Phase 3: memory matching complete ({len(memory_matches)} matches)")
+    elif memory is None:
+        print("[reconcile] Phase 3: memory matching skipped (no memory store)")
+    else:
+        print("[reconcile] Phase 3: memory matching skipped (one or both residual pools are empty)")
 
     ai_input_payload = {
         "UNRECONCILED_LEDGER": residual_ledger,
@@ -119,14 +133,28 @@ def reconcile(
         "MATCHED":             [],
     }
 
-    ai_pipeline_output = ai_match(
-        config=config,
-        result=ai_input_payload,
-        tol=TOLERANCES.get("AI_MATCHER", 5.0),
-        same_side=same_side,
-        llm=llm
-    )
-    ai_matcher_result = ai_pipeline_output["FINAL_RESULT"]
+    if enable_ai_matching:
+        print(f"[reconcile] Phase 4: AI matching starting ({len(residual_ledger)} ledger, {len(residual_bank)} bank)")
+        ai_pipeline_output = ai_match(
+            config=config,
+            result=ai_input_payload,
+            tol=TOLERANCES.get("AI_MATCHER", 5.0),
+            same_side=same_side,
+            llm=llm
+        )
+        ai_matcher_result = ai_pipeline_output["FINAL_RESULT"]
+        print("[reconcile] Phase 4: AI matching complete")
+    else:
+        print("[reconcile] Phase 4: AI matching skipped (disabled)")
+        ai_matcher_result = {
+            "AI_MATCHES": [],
+            "AI_MANY_MATCHES": [],
+            "AUDIT_QUEUE": [],
+            "FINAL_RESIDUALS_LEDGER": residual_ledger,
+            "FINAL_RESIDUALS_BANK": residual_bank,
+            "ai_skipped": True,
+            "ai_skip_reason": "AI matching disabled by caller",
+        }
 
     combined_ai_matches = (
         ai_matcher_result.get("AI_MATCHES",      []) +
@@ -142,21 +170,32 @@ def reconcile(
 
     ai_skipped = ai_matcher_result.get("ai_skipped", False)
     if ai_skipped:
-        all_warnings.append(
-            f"AI matcher unavailable and was skipped: "
-            f"{ai_matcher_result.get('ai_skip_reason', 'unknown error')}. "
-            f"Residual records require manual review."
-        )
+        reason = ai_matcher_result.get("ai_skip_reason", "unknown error")
+        if reason == "AI matching disabled by caller":
+            all_warnings.append(
+                "AI matching was disabled by caller; deterministic residual "
+                "reconciliation will continue."
+            )
+        else:
+            all_warnings.append(
+                f"AI matcher was unavailable and skipped: {reason}. "
+                "Remaining records continue to residual reconciliation."
+            )
 
     residual_result: Optional[dict] = None
-    if enable_residual_reconciliation and (final_unreconciled["ledger"] or final_unreconciled["bank"]):
+    if not enable_residual_reconciliation:
+        print("[reconcile] Phase 5: residual reconciliation skipped (disabled)")
+    elif final_unreconciled["ledger"] or final_unreconciled["bank"]:
+        print(f"[reconcile] Phase 5: residual reconciliation starting ({len(final_unreconciled['ledger'])} ledger, {len(final_unreconciled['bank'])} bank)")
         residual_result = reconcile_residuals(
             unreconciled_ledger=final_unreconciled["ledger"],
             unreconciled_bank=final_unreconciled["bank"],
             config=config,
             same_side=same_side,
             llm=llm,
+            enable_llm=enable_ai_matching,
         )
+        print("[reconcile] Phase 5: residual reconciliation complete")
         if residual_result["stats"].get("ai_skipped"):
             all_warnings.append(
                 f"Residual journal-entry drafting fell back to heuristic rules: "
@@ -167,6 +206,8 @@ def reconcile(
             "ledger": residual_result["still_unreconciled_ledger"],
             "bank":   residual_result["still_unreconciled_bank"],
         }
+    else:
+        print("[reconcile] Phase 5: residual reconciliation skipped (no residual records)")
 
     exact_matches_annotated = [
         annotate_match_confidence({**m, "match_phase": "exact"})

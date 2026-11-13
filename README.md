@@ -118,7 +118,7 @@ python main.py
 In another terminal, with the same virtual environment and configuration:
 
 ```bash
-celery -A app.celery worker --loglevel=info
+celery -A app.celery:celery_app worker --loglevel=info
 ```
 
 The Flask development server listens on `http://localhost:8000`.

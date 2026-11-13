@@ -72,7 +72,7 @@ CLI_ARGS="$(quote_args "${EXTRA_ARGS[@]}")"
 CMD_CLI="cd $(printf '%q' "$PROJECT_DIR") && OLLAMA_URL=$(printf '%q' "$OLLAMA_URL") REDIS_URL=$(printf '%q' "$RUNTIME_REDIS_URL") exec $(printf '%q' "$PYTHON_BIN") main.py ${CLI_ARGS}"
 CMD_FULL_CLI="cd $(printf '%q' "$PROJECT_DIR") && OLLAMA_URL=$(printf '%q' "$LOCAL_OLLAMA_URL") REDIS_URL=$(printf '%q' "$RUNTIME_REDIS_URL") exec $(printf '%q' "$PYTHON_BIN") main.py ${CLI_ARGS}"
 CMD_DEV_CLI="cd $(printf '%q' "$PROJECT_DIR") && OLLAMA_URL=$(printf '%q' "$LOCAL_OLLAMA_URL") REDIS_URL=$(printf '%q' "$RUNTIME_REDIS_URL") exec $(printf '%q' "$PYTHON_BIN") main.py ${CLI_ARGS}"
-CMD_CELERY="cd $(printf '%q' "$PROJECT_DIR") && REDIS_URL=$(printf '%q' "$RUNTIME_REDIS_URL") exec $(printf '%q' "$CELERY_BIN") -A app.celery worker --loglevel=info"
+CMD_CELERY="cd $(printf '%q' "$PROJECT_DIR") && REDIS_URL=$(printf '%q' "$RUNTIME_REDIS_URL") exec $(printf '%q' "$CELERY_BIN") -A app.celery:celery_app worker --loglevel=info"
 
 print_usage() {
     cat <<'EOF'
@@ -240,7 +240,7 @@ case "$MODE" in
     celery-only)
         ensure_project_venv
         ensure_local_docker_services
-        exec env REDIS_URL="$RUNTIME_REDIS_URL" "$CELERY_BIN" -A app.celery worker --loglevel=info
+        exec env REDIS_URL="$RUNTIME_REDIS_URL" "$CELERY_BIN" -A app.celery:celery_app worker --loglevel=info
         ;;
     ollama-only)
         ensure_local_docker_services

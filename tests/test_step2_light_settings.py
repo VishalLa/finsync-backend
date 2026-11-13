@@ -46,7 +46,7 @@ def skip_ai_matcher(*, result, **kwargs):
         }
     }
 
-matcher.ai_matcher = skip_ai_matcher
+matcher.ai_match = skip_ai_matcher
 ledger = [
     LedgerFormat(
         ledger_id=f"L-{index}",

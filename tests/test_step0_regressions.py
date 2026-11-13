@@ -58,7 +58,7 @@ def test_three_row_reconciliation_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ledger, bank = _three_row_inputs()
-    monkeypatch.setattr(matcher, "ai_matcher", _skip_ai_matcher)
+    monkeypatch.setattr(matcher, "ai_match", _skip_ai_matcher)
 
     result = reconcile(
         config=SimpleNamespace(),

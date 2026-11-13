@@ -293,29 +293,35 @@ class FuzzyMatcher:
     ) -> None:
         used_gl: Set[int] = set()
         used_bk: Set[int] = set()
-        self._emit(
-            self._select(
-                edges=edges,
-                used_gl=used_gl,
-                used_bk=used_bk,
-                gls=gls,
-                bks=bks
-            ), 
-            gls=gls, bks=bks
+        accepted = self._select(
+            edges=edges,
+            used_gl=used_gl,
+            used_bk=used_bk,
+            gls=gls,
+            bks=bks,
         )        
+        self._emit(accepted, gls=gls, bks=bks)
+        self._rebuild_pools(gls, bks, used_gl, used_bk)
 
     # Strategy 1 / 2 - Deposit in Transit  /  Outstanding Checks
     def _build_timing(
-        self, gl, bank, amt, diff, adj_type, high_days, verb
+        self, gl, bank, amt, lag, cal_days, adj_type, early_adj_type,
+        high_days, verb, early, sim
     ):
+        adjustment_type = early_adj_type if early else adj_type
+        timing_text = (
+            f"{verb} {abs(lag)} day(s) before ledger date."
+            if early
+            else f"{verb} {lag} day(s) after ledger date."
+        )
         return ({
             "ledger_id":        _safe_str(gl, "ledger_id"),
             "bank_id":          getattr(bank, "row_index", None),
-            "adjustment_type":  adj_type,
-            "confidence_score": "High" if diff <= high_days else "Medium",
+            "adjustment_type":  adjustment_type,
+            "confidence_score": "High" if abs(lag) <= high_days else "Medium",
             "details": (
                 f"Amount matches ({amt:.2f}); "
-                f"{verb} {diff} day(s) after ledger date."
+                f"{timing_text}"
             ),
         }, None)
         
@@ -359,7 +365,9 @@ class FuzzyMatcher:
                     continue
                 
                 sim = text_similarity(_safe_str(gl, "account_name"), _safe_str(bank, "narration"))
-                score = self._timing_score(sim, lag, abs(g_amt - b_amt), tol, self._ref_equal(gl, bank), early)
+                score = self._time_score(
+                    sim, lag, abs(g_amt - b_amt), tol, self._ref_equal(gl, bank)
+                )
                 local.append((
                     score, (i,), (j,), partial(
                         self._build_timing, gl, bank, g_amt, lag, cal_days, adj_type, early_adj_type, high_days, verb, early, sim
@@ -375,6 +383,7 @@ class FuzzyMatcher:
             bank_amt_of=self.bank_in, 
             base_window=5,
             adj_type="Deposit in Transit", 
+            early_adj_type="Early Deposit in Transit",
             high_days=3, 
             verb="bank cleared",
         )
@@ -385,6 +394,7 @@ class FuzzyMatcher:
             bank_amt_of=self.bank_out, 
             base_window=14,
             adj_type="Outstanding Check", 
+            early_adj_type="Early Outstanding Check",
             high_days=7, 
             verb="payment cleared",
         )
@@ -1022,7 +1032,7 @@ class FuzzyMatcher:
                 widest = base_window + self._CROSS_MONTH_BUFFER
                 early_bd = self.COMBO_EARLY_BD if self.ALLOW_BANK_BEFORE_LEDGER else 0
                 if anchor_is_gl:
-                    lo_d, hi = self._cal.date_bounds(a_dt[a], -early_bd, widest)
+                    lo_d, hi_d = self._cal.date_bounds(a_dt[a], -early_bd, widest)
                 else:
                     lo_d, hi_d = self._cal.date_bounds(a_dt[a], -widest, early_bd)
                 lo, hi = lo_d.toordinal(), hi_d.toordinal()

@@ -351,12 +351,12 @@ from matcher import reconcile, MatchMemory
 from matcher.memory_match import JSONFileBackend  # or your own backend
 from shared.settings import get_settings
 
-settings = get_settings()
+config = get_settings()
 warnings = []
 memory = MatchMemory(backend=JSONFileBackend("memory/patterns.json"))
 
 result = reconcile(
-    config=settings,
+    config=config,
     ledger_result=parsed_ledger,   # {"records": [LedgerFormat, ...]}
     bank_result=parsed_bank,       # {"records": [BankStatement, ...], "bank_name": ..., "template_version": ...}
     all_warnings=warnings,
@@ -364,6 +364,7 @@ result = reconcile(
     auto_detect_same_side=True,     # warns (doesn't override) if this looks wrong
     memory=memory,                  # omit to disable cross-run pattern memory
     llm=None,                       # omit to use the shared default Ollama client
+    enable_ai_matching=True,         # set False to skip Ollama-backed phases
     enable_residual_reconciliation=True,
 )
 

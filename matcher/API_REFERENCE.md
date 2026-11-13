@@ -10,7 +10,7 @@ convert to integer paise where exact currency comparisons are required.
 
 ## Main pipeline — `matcher/__init__.py`
 
-### `reconcile(config, ledger_result, bank_result, all_warnings, same_side=True, auto_detect_same_side=True, memory=None, llm=None, enable_residual_reconciliation=True)`
+### `reconcile(config, ledger_result, bank_result, all_warnings, same_side=True, auto_detect_same_side=True, memory=None, llm=None, enable_ai_matching=True, enable_residual_reconciliation=True)`
 
 - `ledger_result`, `bank_result`: mappings containing `records`; bank metadata
   may also contain `bank_name` and `template_version`.
@@ -23,12 +23,16 @@ convert to integer paise where exact currency comparisons are required.
 - `config`: required `Settings` used to configure the shared AI client.
 - `llm`: optional LLM client supplied to AI and residual-draft phases.
 - `memory`: optional `MatchMemory`; omit to disable cross-run recognition.
+- `enable_ai_matching`: skip the AI matching and AI journal-drafting calls when
+  false; exact, fuzzy, memory, and deterministic residual matching still run.
 - `enable_residual_reconciliation`: enable the final timing/split/draft phase.
 - Returns a report mapping containing per-phase matches, audit/review queues,
   unmatched records, warnings, and summary statistics.
 
 Pipeline order: optional orientation detection, exact, fuzzy, memory, AI, then
 residual reconciliation. Each phase receives only the prior phase's leftovers.
+The AI phase can be disabled with `enable_ai_matching=False`; residual matching
+then uses its deterministic rules and heuristic journal-draft fallback.
 
 `_quality_summary(all_matches)` accepts confidence-annotated match mappings and
 returns the average, low-confidence count/percentage, and per-match-type totals.

@@ -57,7 +57,7 @@ def test_confident_orientation_detection_does_not_override_caller_setting(
 
     monkeypatch.setattr(matcher, "exact_match", exact_match)
     monkeypatch.setattr(matcher, "fuzzy_matcher", fuzzy_matcher)
-    monkeypatch.setattr(matcher, "ai_matcher", ai_matcher)
+    monkeypatch.setattr(matcher, "ai_match", ai_matcher)
     warnings = []
 
     reconcile(

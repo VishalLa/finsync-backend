@@ -1,6 +1,7 @@
 from typing import List, Optional
 
-from .fuzzy_matcher.fuzzy_match import fuzzy_matcher
+from .fuzzy_matcher.fuzzy_match import FuzzyMatcher
+from .fuzzy_matcher.relationship import Relationship
 from .exact_match import exact_match as exact_matcher
 from .ai_matcher.ai_matcher import ai_match
 from .utils.confidence import annotate_match_confidence
@@ -99,12 +100,18 @@ def reconcile(
     print(f"[reconcile] Phase 1: exact matching complete ({len(exact_match_result.get('EXACT_MATCHES', []))} matches)")
 
     print("[reconcile] Phase 2: fuzzy matching starting")
-    fuzzy_match_result = fuzzy_matcher(
+    fuzzy_engine = FuzzyMatcher(
         pending_ledger=exact_match_result.get("PENDING_FUZZY_LEDGER", []),
         pending_bank=exact_match_result.get("PENDING_FUZZY_BANK", []),
         tolerances=TOLERANCES,
-        same_side=same_side
+        same_side=same_side,
     )
+    fuzzy_engine.run_standard_strategies()
+    relationship_engine = Relationship(fuzzy_engine)
+    relationship_engine.run_aggregations()
+    fuzzy_engine.run_specialized_residual_strategies()
+    relationship_engine.match_many_to_many()
+    fuzzy_match_result = fuzzy_engine.to_result()
     print(f"[reconcile] Phase 2: fuzzy matching complete ({len(fuzzy_match_result.get('FUZZY_MATCHES', []))} matches)")
 
     residual_ledger = fuzzy_match_result["UNRECONCILED_ITEMS"]["ledger"]
@@ -269,6 +276,8 @@ def reconcile(
             "bank_records":        len(bank_records),
             "exact_matches":       len(exact_match_result.get("EXACT_MATCHES", [])),
             "fuzzy_matches":       len(fuzzy_match_result.get("FUZZY_MATCHES", [])),
+            "proposed_many_to_many_matches": len(fuzzy_match_result.get("PROPOSED_MATCHES", [])),
+            "many_to_many":        fuzzy_match_result.get("M2M_STATS", {}),
             "memory_matches":      len(memory_matches_annotated),
             "ai_matches":          len(combined_ai_matches),
             "ai_audit_queue":      len(ai_audit_queue),
@@ -283,6 +292,7 @@ def reconcile(
         },
         "EXACT_MATCHES":      exact_matches_annotated,
         "FUZZY_MATCHES":      fuzzy_matches_annotated,
+        "PROPOSED_MATCHES":   fuzzy_match_result.get("PROPOSED_MATCHES", []),
         "MEMORY_MATCHES":     memory_matches_annotated,
         "AI_MATCHES":         ai_matches_annotated,
         "AI_AGENT":           ai_matches_annotated,
@@ -290,7 +300,10 @@ def reconcile(
         "RESIDUAL_TIMING_MATCHES":    (residual_result or {}).get("timing_matches", []),
         "RESIDUAL_SPLIT_MATCHES":     (residual_result or {}).get("split_matches", []),
         "SUGGESTED_JOURNAL_ENTRIES":  (residual_result or {}).get("suggested_journal_entries", []),
-        "HUMAN_REVIEW_QUEUE":         (residual_result or {}).get("human_review_queue", []),
+        "HUMAN_REVIEW_QUEUE":         (residual_result or {}).get("human_review_queue", []) + [
+            {"candidate_id": item["candidate_id"], "reason": "many_to_many_candidate"}
+            for item in fuzzy_match_result.get("PROPOSED_MATCHES", [])
+        ],
         "UNRECONCILED_ITEMS": final_unreconciled,
         "IGNORED_METADATA":   fuzzy_match_result.get("IGNORED_METADATA",   []),
         "AUDIT_INVESTIGATION": fuzzy_match_result.get("AUDIT_INVESTIGATION", []),

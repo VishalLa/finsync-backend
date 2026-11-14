@@ -28,6 +28,13 @@ from ..utils.helper import (
 
     text_similarity as _text_similarity,
     is_transposition,
+    record_dates,
+    business_day_lag,
+    business_day_window,
+    edge_tie_key,
+    select_match_edges,
+    emit_match_edges,
+    rebuild_unmatched_pools,
 )
 
 text_similarity = lru_cache(maxsize=262_144)(_text_similarity)
@@ -56,7 +63,6 @@ class _AmountIndex:
 
 
 class FuzzyMatcher:
-    MAX_COMBINATION_SIZE: int = 6   
     
     SUBSET_MAX_NODES: int = 200_000
     SUBSET_MAX_SOLUTIONS: int = 300
@@ -74,6 +80,8 @@ class FuzzyMatcher:
         self.ledger_pool:   List[LedgerFormat]  = list(pending_ledger)
         self.bank_pool:     List[BankStatement] = list(pending_bank)
         self.fuzzy_matches: List[Dict[str, Any]]= []
+        self.proposed_matches: List[Dict[str, Any]] = []
+        self.m2m_stats: Dict[str, int] = {}
 
         self.ignored_metadata_records:  List[IgnoredMetadataRecord]  = []
         self.audit_investigation_items: List[AuditInvestigationItem] = []
@@ -170,7 +178,6 @@ class FuzzyMatcher:
     
     ALLOW_BANK_BEFORE_LEDGER: bool = True
     TIMING_EARLY_BD: int = 3   # deposit-in-transit / outstanding-cheque strategies
-    COMBO_EARLY_BD:  int = 2   # aggregated / many-to-one strategies
     _MAX_EDGES_PER_RECORD: int = 50   # safety valve for pathological duplicates
     
     def _prepare_calendar(self) -> None:
@@ -182,14 +189,14 @@ class FuzzyMatcher:
             
     def _lag(self, ledger_date, bank_date) -> int:
         """Signed business-day lag of the bank date relative to the ledger date (+ = bank later)."""
-        return self._cal.lag(ledger_date, bank_date)
+        return business_day_lag(self._cal, ledger_date, bank_date)
     
     def _dates(self, recs: List[Any], attr: str) -> list:
-        return[_to_date(_safe_str(r, attr)) for r in recs]
+        return record_dates(recs, attr)
     
     def _win(self, base: int, da, db) -> int:
         """Date-object version of _effective_window (no re-parsing)."""
-        return base + self._CROSS_MONTH_BUFFER if (da.year, da.month) != (db.year, db.month) else base   
+        return business_day_window(base, da, db, self._CROSS_MONTH_BUFFER)
     
     def _time_score(
         self,
@@ -230,10 +237,7 @@ class FuzzyMatcher:
     ) -> tuple:
         """Tie-break on the records' own ids, not on their position in the pool,
         so equal-scoring candidates resolve the same way whatever the input order."""
-        return (
-            tuple(str(getattr(gls[i], "ledger_id", "")) for i in gi),
-            tuple(str(getattr(bks[j], "row_index", "")) for j in bi),
-        )
+        return edge_tie_key(gi, bi, gls, bks)
         
     def _select(
         self,
@@ -244,20 +248,7 @@ class FuzzyMatcher:
         bks: list
     ) -> list:
         """Greedy by score; deterministic tie-break on record ids."""
-        edges.sort(key=lambda e: (-e[0], self._tie_key(
-            gi=e[1], bi=e[2], gls=gls, bks=bks
-        )))
-        accepted = []
-        for _score, gi, bi, build in edges:
-            if (
-                any(i in used_gl for i in gi) or 
-                any(j in  used_bk for j in bi)
-            ):
-                continue
-            used_gl.update(gi)
-            used_bk.update(bi)
-            accepted.append((gi, bi, build))
-        return accepted
+        return select_match_edges(edges, used_gl, used_bk, gls, bks)
     
     def _emit(
         self,
@@ -265,15 +256,9 @@ class FuzzyMatcher:
         gls: list,
         bks: list
     ) -> None:
-        accepted.sort(key=lambda a: self._tie_key(
-            gi=a[0], bi=a[1], gls=gls, bks=bks
-        ))
-        for _gi, _bi, build in accepted:
-            match, audit = build()
-            self.fuzzy_matches.append(match)
-            
-            if audit is not None:
-                self.audit_investigation_items.append(audit)
+        emit_match_edges(
+            accepted, gls, bks, self.fuzzy_matches, self.audit_investigation_items
+        )
                 
     def _rebuild_pools(
         self,
@@ -282,8 +267,7 @@ class FuzzyMatcher:
         used_gl: Set[int],
         used_bk: Set[int]
     ) -> None:
-        self.ledger_pool = [g for i, g in enumerate(gls) if i not in used_gl]
-        self.bank_pool = [b for j, b in enumerate(bks) if j not in used_bk]
+        rebuild_unmatched_pools(self, gls, bks, used_gl, used_bk)
         
     def _assign(
         self,
@@ -918,226 +902,6 @@ class FuzzyMatcher:
         self._assign(edges, gls, bks)
 
 
-    # Strategy 12 / 13 - Aggregations (1 ledger : N bank  /  N ledger : 1 bank)
-    def _combos_with_sum(
-        self, valid: List[tuple], target: float, r: int
-    ):
-        """Yield r-item combinations of `valid` (items are (record, amount)) whose amounts sum to
-        `target` within tolerance. Same combinations, same order and same left-to-right float
-        sums as filtering itertools.combinations(valid, r), but a branch is abandoned as soon as
-        its running total exceeds target + tol (all amounts are positive)."""
-        amts = [x[1] for x in valid]
-        n, tol = len(valid), self._tol
-        ceiling = target + tol + _EPS
-        chosen: List[int] = []
-
-        def rec(start: int, k: int, total: float):
-            if k == 0:
-                if _amounts_equal(target, total, tol):
-                    yield tuple(valid[i] for i in chosen)
-                return
-            
-            for i in range(start, n - k + 1):
-                t = total + amts[i]
-                if t > ceiling:
-                    continue
-                
-                chosen.append(i)
-                yield from rec(i + 1, k - 1, t)
-                
-                chosen.pop()
-
-        yield from rec(0, r, 0.0)
-
-    def _build_aggregated(
-        self, gl, banks, amts, gl_amt
-    ):
-        id_str = " & ".join(str(getattr(b, "row_index", "?")) for b in banks)
-        amt_str = " + ".join(f"{a:.2f}" for a in amts)
-        return ({
-            "ledger_id":        _safe_str(gl, "ledger_id"),
-            "bank_id":          id_str,
-            "adjustment_type":  f"Aggregated Split Transaction ({len(banks)} items)",
-            "confidence_score": "High",
-            "details": (
-                f"Ledger ({gl_amt:.2f}) = sum of {len(banks)} bank entries ({amt_str})."
-            ),
-        }, None)
-
-    def _build_many_to_one(
-        self, gls_, bank, amts, b_amt
-    ):
-        id_str = " & ".join(_safe_str(g, "ledger_id") for g in gls_)
-        amt_str = " + ".join(f"{a:.2f}" for a in amts)
-        return ({
-            "ledger_id":        id_str,
-            "bank_id":          getattr(bank, "row_index", None),
-            "adjustment_type":  f"Many-to-One Aggregation ({len(gls_)} items)",
-            "confidence_score": "High",
-            "details": (
-                f"Bank ({b_amt:.2f}) = sum of {len(gls_)} ledger entries ({amt_str})."
-            ),
-        }, None)
-
-    def _match_combos(self, anchor_is_gl: bool) -> None:
-        base_window = 3
-        gls, bks = list(self.ledger_pool), list(self.bank_pool)
-        gl_dt, bk_dt = self._dates(gls, "transaction_date"), self._dates(bks, "date")
-
-        anchors = gls if anchor_is_gl else bks
-        members = bks if anchor_is_gl else gls
-        a_dt = gl_dt if anchor_is_gl else bk_dt
-        m_dt = bk_dt if anchor_is_gl else gl_dt
-        
-        # (anchor amount fn, member amount fn) picked by the anchor's direction
-        a_out, a_in = (self.gl_out, self.gl_in) if anchor_is_gl else (self.bank_out, self.bank_in)
-        m_out, m_in = (self.bank_out, self.bank_in) if anchor_is_gl else (self.gl_out, self.gl_in)
-        
-        # text compared as in the original: S12 (gl name, narration); S13 passes counterpart=narration
-        a_text_attr = "account_name" if anchor_is_gl else "narration"
-        m_text_attr = "narration" if anchor_is_gl else "account_name"
-
-        m_order = sorted(
-            (m_dt[k].toordinal(), k) 
-            for k in range(len(members)) 
-            if m_dt[k] is not None
-        )
-        m_keys = [o for o, _ in m_order]
-        used_a: Set[int] = set()
-        used_m: Set[int] = set()
-        used_gl = used_a if anchor_is_gl else used_m
-        used_bk = used_m if anchor_is_gl else used_a
-
-        accepted_all: list = []
-        active: List[int] = [
-            k for k, r in enumerate(anchors) 
-            if a_dt[k] is not None
-        ]
-
-        while active:
-            edges: List[Edge] = []
-            has_edge: Set[int] = set()
-            maybe_more: Set[int] = set()
-
-            for a in active:
-                rec = anchors[a]
-                is_out = a_out(rec) > 0
-                a_amt = a_out(rec) if is_out else a_in(rec)
-                if a_amt <= 0:
-                    continue
-                
-                m_amt_of = m_out if is_out else m_in
-
-                valid, idx_of = [], {}
-                widest = base_window + self._CROSS_MONTH_BUFFER
-                early_bd = self.COMBO_EARLY_BD if self.ALLOW_BANK_BEFORE_LEDGER else 0
-                if anchor_is_gl:
-                    lo_d, hi_d = self._cal.date_bounds(a_dt[a], -early_bd, widest)
-                else:
-                    lo_d, hi_d = self._cal.date_bounds(a_dt[a], -widest, early_bd)
-                lo, hi = lo_d.toordinal(), hi_d.toordinal()
-                ks = sorted(m_order[q][1] for q in range(bisect_left(m_keys, lo), bisect_right(m_keys, hi)))
-                for k in ks:
-                    m = members[k]
-                    if k in used_m or m_dt[k] is None:
-                        continue
-                    
-                    amt = m_amt_of(m)
-                    if amt <= 0:
-                        continue
-                    
-                    # diff is always bank_date - ledger_date (as in the original)
-                    d_gl, d_bk = (a_dt[a], m_dt[k]) if anchor_is_gl else (m_dt[k], a_dt[a])
-                    lag = self._lag(d_gl, d_bk)
-                    if -early_bd <= lag <= self._win(base_window, d_gl, d_bk):
-                        valid.append((m, amt))
-                        idx_of[id(m)] = k
-
-                truncated = len(valid) > MAX_COMBINATION_POOL_SIZE
-                valid = _closest_candidates(
-                    valid=valid, 
-                    target=a_amt, 
-                    max_pool=MAX_COMBINATION_POOL_SIZE,
-                    counterpart_text=_safe_str(rec, a_text_attr),
-                    text_of=lambda r, _attr=m_text_attr: _safe_str(r, _attr),
-                )
-                
-                if truncated:
-                    maybe_more.add(a)
-
-                sim_cache: Dict[int, float] = {}
-
-                def sim_of(m):
-                    s = sim_cache.get(id(m))
-                    if s is None:
-                        if anchor_is_gl:
-                            s = text_similarity(_safe_str(rec, "account_name"), _safe_str(m, "narration"))
-                        else:
-                            s = text_similarity(_safe_str(m, "account_name"), _safe_str(rec, "narration"))
-                        sim_cache[id(m)] = s
-                    return s
-
-                # Best combination for this anchor = highest *average* narration similarity
-                # (so one good row padded with unrelated rows scores poorly), with a small
-                # preference for fewer items. Acceptance gate is unchanged: max similarity > 0.15.
-                best = None           # (score, tie, combo)
-                search = find_subsets(
-                    [int(round(x[1]*100)) for x in valid],
-                    int(round(a_amt * 100)),
-                    int(round(self._tol * 100)),
-                    min_size=2,
-                    max_size=self.MAX_COMBINATION_SIZE,
-                    max_nodes=self.SUBSET_MAX_NODES,
-                    max_solutions=self.SUBSET_MAX_SOLUTIONS
-                )
-                for sel in search.solutions:
-                    combo = tuple(valid[i] for i in sel)
-                    r = len(combo)
-                    sims = [sim_of(x[0] for x in combo)]
-                    if max(sims) <= 0.15:
-                        continue
-                    
-                    score = sum(sims) / r - 0.02 * (r - 2)
-                    if best is None or score > best[0] + 1e-12:
-                        best = (score, 0, combo)
-                
-                if best is None:
-                    continue
-                
-                score, _tie, combo = best
-                midx = tuple(sorted(idx_of[id(x[0])] for x in combo))
-                recs = [x[0] for x in combo]
-                amts = [x[1] for x in combo]
-                
-                if anchor_is_gl:
-                    build = partial(self._build_aggregated, rec, recs, amts, a_amt)
-                    edges.append((score, (a,), midx, build))
-                else:
-                    build = partial(self._build_many_to_one, recs, rec, amts, a_amt)
-                    edges.append((score, midx, (a,), build))
-                has_edge.add(a)
-
-            accepted = self._select(edges, used_gl, used_bk, gls, bks)
-            accepted_all.extend(accepted)
-            if not accepted:
-                break
-            matched_anchors = {
-                (gi if anchor_is_gl else bi)[0] if (gi if anchor_is_gl else bi) else None 
-                for gi, bi, _ in accepted
-            }
-            blocked = has_edge - matched_anchors
-            active = sorted((blocked | maybe_more) - matched_anchors)
-
-        self._emit(accepted_all, gls, bks)
-        self._rebuild_pools(gls, bks, used_gl, used_bk)
-
-    def match_aggregated_transactions(self) -> None:
-        self._match_combos(anchor_is_gl=True)
-
-    def match_many_to_one_aggregation(self) -> None:
-        self._match_combos(anchor_is_gl=False)
-
-
     # Strategy 14 - One-to-Many Split Charge  (1 Ledger : 1 Bank where bank = 2×)
     def _build_split_charge(
         self, bk, gl, b_amt, l_amt
@@ -1277,43 +1041,52 @@ class FuzzyMatcher:
         self._assign(edges, gls, bks)
         
     
-    # Orchestrator
-    def run(self) -> dict:
+    # Standard fuzzy stages, excluding group relationship strategies.
+    def run_standard_strategies(self) -> None:
+        self.cleanse_zero_amount_metadata()
+        self.flag_ghost_reversals()
 
-        # Stage 0: Pre-match cleansing 
-        self.cleanse_zero_amount_metadata()  
-        self.flag_ghost_reversals()           
+        self.match_deposit_in_transit()
+        self.match_outstanding_checks()
+        self.match_bank_service_charges()
+        self.match_text_similarity()
+        self.match_transposition_errors()
+        self.match_rounding_differences()
+        self.match_nsf_returned_items()
+        self.match_interest_income()
+        self.match_discounts_and_taxes()
 
-        # Stage 1-9: Standard heuristics
-        self.match_deposit_in_transit()       
-        self.match_outstanding_checks()     
-        self.match_bank_service_charges()     
-        self.match_text_similarity()          
-        self.match_transposition_errors()     
-        self.match_rounding_differences()     
-        self.match_nsf_returned_items()       
-        self.match_interest_income()          
-        self.match_discounts_and_taxes()      
+        self.match_bank_side_zero_sum()
+        self.match_ledger_side_zero_sum()
 
-        # Stage 10-13: Zero-sum & aggregations 
-        self.match_bank_side_zero_sum()       
-        self.match_ledger_side_zero_sum()    
-        self.match_aggregated_transactions()  
-        self.match_many_to_one_aggregation()  
+    # Strategies 14-15 run after the one-to-many / many-to-one relationship pass.
+    def run_specialized_residual_strategies(self) -> None:
+        self.match_split_charge()
+        self.match_base_fee_plus_tax()
 
-        # Stage 14-15: Specialised residuals 
-        self.match_split_charge()             
-        self.match_base_fee_plus_tax()        
-
+    def to_result(self) -> dict:
         return {
             "FUZZY_MATCHES": self.fuzzy_matches,
+            "PROPOSED_MATCHES": self.proposed_matches,
+            "M2M_STATS": self.m2m_stats,
             "UNRECONCILED_ITEMS": {
                 "ledger": self.ledger_pool,
-                "bank":   self.bank_pool,
+                "bank": self.bank_pool,
             },
-            "IGNORED_METADATA":    self.ignored_metadata_records,
+            "IGNORED_METADATA": self.ignored_metadata_records,
             "AUDIT_INVESTIGATION": self.audit_investigation_items,
         }
+
+    def run(self) -> dict:
+        """Compatibility entry point including all relationship strategies."""
+        from .relationship import Relationship
+
+        self.run_standard_strategies()
+        relationships = Relationship(self)
+        relationships.run_aggregations()
+        self.run_specialized_residual_strategies()
+        relationships.match_many_to_many()
+        return self.to_result()
 
 
 def fuzzy_matcher(

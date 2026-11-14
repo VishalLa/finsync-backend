@@ -303,6 +303,10 @@ class MatchMemory:
         for m in matches:
             lid = str(m.get("ledger_id", ""))
             bid = str(m.get("bank_id", ""))
+            # Composite ids are intentionally not learned as a single-row pattern.
+            # Component-aware memory would require a different pattern schema.
+            if " & " in lid or " & " in bid:
+                continue
             ledger_text = gl_by_id.get(lid)
             bank_text   = bank_by_id.get(bid)
             if ledger_text is None or bank_text is None:

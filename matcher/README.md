@@ -19,7 +19,7 @@ GL Records + Bank Records
  └─────────┬───────────┘
            ▼
  ┌─────────────────────┐
- │ 2. Fuzzy Match      │  17 deterministic heuristics
+ │ 2. Fuzzy Match      │  deterministic rules + relationship matching
  └─────────┬───────────┘
            ▼
  ┌─────────────────────┐
@@ -47,7 +47,7 @@ GL Records + Bank Records
 - [Pipeline Workflow](#pipeline-workflow)
   - [Phase 0 — Same-Side Detection](#phase-0--same-side-detection)
   - [Phase 1 — Exact Match](#phase-1--exact-match)
-  - [Phase 2 — Fuzzy Match](#phase-2--fuzzy-match)
+  - [Phase 2 — Fuzzy and Relationship Match](#phase-2--fuzzy-and-relationship-match)
   - [Phase 3 — Memory Match](#phase-3--memory-match)
   - [Phase 4 — AI Match](#phase-4--ai-match)
   - [Phase 5 — Residual Reconciliation](#phase-5--residual-reconciliation)
@@ -66,14 +66,17 @@ GL Records + Bank Records
 | File                                | Responsibility                                                              |
 |-------------------------------------|------------------------------------------------------------------------------|
 | `__init__.py`                       | Orchestrates `reconcile()`, tolerances, and quality summary                 |
+| `base.py`                           | Shared abstract `Matcher` interface, pools, direction helpers, and settings  |
 | `same_side_detect.py`               | Infers whether GL debit/credit maps to the same or opposite bank column     |
 | `exact_match.py`                    | Phase 1 — strict date/amount/reference matching                             |
-| `fuzzy_matcher/fuzzy_match.py`      | Phase 2 — 17 deterministic heuristic-matching strategies                   |
+| `fuzzy_matcher/__init__.py`         | Runs the fuzzy and relationship engines and combines their phase result    |
+| `fuzzy_matcher/fuzzy_match.py`      | Phase 2a — deterministic fuzzy strategies                                  |
+| `fuzzy_matcher/relationship.py`      | Phase 2b — independent 1:N, N:1, and M:N relationship matcher              |
 | `memory_match.py`                   | Phase 3 — cross-run pattern memory and persistence backends                 |
 | `ai_matcher/ai_matcher.py`           | Phase 4 — LLM-backed semantic matcher (1-to-1 and many-to-1)                |
 | `ai_matcher/ai_utils.py`            | Shared LLM setup, amount helpers, candidate filtering, and subset search    |
-| `residual_reconciler.py`              | Phase 5 — classification, wide-window resolution, journal drafting          |
-| `utils/confidence.py`                  | Normalizes confidence values and computes match-quality statistics          |
+| `residual_reconciler.py`             | Phase 5 — classification, wide-window resolution, journal drafting          |
+| `utils/confidence.py`                | Normalizes confidence values and computes match-quality statistics          |
 
 ---
 
@@ -125,53 +128,69 @@ floating-point differences in currency comparisons.
 **Output:** `EXACT_MATCHES`, plus `PENDING_FUZZY_LEDGER` / `PENDING_FUZZY_BANK`
 (everything not matched) passed to Phase 2.
 
-### Phase 2 — Fuzzy Match
+### Phase 2 — Fuzzy and Relationship Match
 
-`fuzzy_match.fuzzy_matcher()` → `FuzzyMatcher.run()`
+The package-level `fuzzy_matcher()` in `fuzzy_matcher/__init__.py` runs two
+engines in sequence. `FuzzyMatcher` handles the strategies defined in
+`fuzzy_match.py`; then `Relationship`, an independent `Matcher` subclass,
+handles the remaining records with group relationships. The wrapper combines
+their accepted matches, proposals, audit metadata, and final unmatched pools
+into one result for the memory and AI phases.
 
-Applies 17 deterministic strategies **in a fixed order**, each pulling
-matched items out of the shared `ledger_pool` / `bank_pool` before the next
-strategy runs:
+#### FuzzyMatcher strategies
 
-| # | Strategy                          | What it catches                                                   |
-|---|------------------------------------|---------------------------------------------------------------------|
-| 1 | `cleanse_zero_amount_metadata`     | Zero-amount/metadata-only rows — set aside, not treated as unmatched |
-| 2 | `flag_ghost_reversals`             | Reversal/duplicate/bounced narrations — flagged for audit           |
-| 3 | `match_deposit_in_transit`         | Deposits recorded on GL, not yet cleared on the bank                |
-| 4 | `match_outstanding_checks`         | Checks issued on GL, not yet cleared on the bank                    |
-| 5 | `match_bank_service_charges`       | Bank fees/charges with no GL counterpart                            |
-| 6 | `match_text_similarity`            | Narration ↔ account-name text/acronym similarity                    |
-| 7 | `match_transposition_errors`       | Digit-transposition typos (same digits, different order)            |
-| 8 | `match_rounding_differences`       | Small rounding deltas within tolerance                              |
-| 9 | `match_nsf_returned_items`         | NSF / bounced / dishonored items                                     |
-| 10| `match_interest_income`            | Interest/APY credits                                                 |
-| 11| `match_discounts_and_taxes`        | Discount/tax-adjusted amounts                                        |
-| 12| `match_bank_side_zero_sum`         | Bank-side entries that net to zero                                   |
-| 13| `match_ledger_side_zero_sum`       | Ledger-side entries that net to zero                                 |
-| 14| `match_aggregated_transactions`    | Batched/aggregated transaction groups                                |
-| 15| `match_many_to_one_aggregation`    | Many GL lines summing to one bank row                                |
-| 16| `match_split_charge`               | One GL line = exactly half of one bank charge (flags missing 2nd half)|
-| 17| `match_base_fee_plus_tax`          | One GL line = sum of a bank fee row + a nearby tax/GST row            |
+These strategies run in a fixed order. Each removes accepted matches from its
+own ledger and bank pools before the next strategy runs:
+
+| Order | Strategy                         | What it catches                                                      |
+|-------|----------------------------------|----------------------------------------------------------------------|
+| setup | `cleanse_zero_amount_metadata`   | Zero-amount/metadata-only rows — set aside, not treated as unmatched |
+| setup | `flag_ghost_reversals`           | Reversal/duplicate/bounced narrations — flagged for audit            |
+| 1     | `match_deposit_in_transit`       | Deposits recorded on GL, not yet cleared on the bank                 |
+| 2     | `match_outstanding_checks`       | Checks issued on GL, not yet cleared on the bank                     |
+| 3     | `match_bank_service_charges`     | Bank fees/charges with no GL counterpart                             |
+| 4     | `match_text_similarity`          | Narration ↔ account-name text/acronym similarity                     |
+| 5     | `match_transposition_errors`     | Digit-transposition typos (same digits, different order)             |
+| 6     | `match_rounding_differences`     | Small rounding deltas within tolerance                               |
+| 7     | `match_nsf_returned_items`       | NSF / bounced / dishonored items                                      |
+| 8     | `match_interest_income`          | Interest/APY credits                                                  |
+| 9     | `match_discounts_and_taxes`      | Discount/tax-adjusted amounts                                         |
+| 10    | `match_bank_side_zero_sum`       | Bank-side entries that net to zero                                    |
+| 11    | `match_ledger_side_zero_sum`     | Ledger-side entries that net to zero                                  |
+| 12    | `match_split_charge`             | One GL line equals half of a bank charge; flags a possible missing half|
+| 13    | `match_base_fee_plus_tax`        | One GL line equals a bank fee plus a nearby tax/GST row               |
+
+#### Relationship strategies
+
+`Relationship.run()` uses the `Matcher` base state and executes these
+strategies on the residual pools left by `FuzzyMatcher`, in order:
+
+1. `match_one_to_many` — one ledger row balanced by a group of bank rows.
+2. `match_many_to_one` — a group of ledger rows balanced by one bank row.
+3. `match_many_to_many` — residual groups on both sides with matching totals;
+   low-confidence candidates are returned as proposals for review.
 
 Key mechanics:
-- All strategies respect the `TOLERANCES` dict passed in from `__init__.py`.
-- Combination-based strategies (many-to-one, aggregation) cap combination size
-  at `MAX_COMBINATION_SIZE = 6` and pre-filter the candidate pool to
-  `MAX_COMBINATION_POOL_SIZE = 40` for performance.
-- Date windows automatically widen by `_CROSS_MONTH_BUFFER = 15` days when a
-  candidate pair straddles a month boundary (common with month-end batch
-  postings).
+- Both engines receive the same `same_side`, tolerance, and calendar settings.
+- Fuzzy combination strategies cap combination size at
+  `MAX_COMBINATION_SIZE = 6` and pre-filter candidate pools where applicable.
+- The relationship engine bounds M:N enumeration by combination size and node
+  budget, compares integer-paise totals, and uses stable record IDs to break
+  ties.
+- Fuzzy date windows widen by `_CROSS_MONTH_BUFFER = 15` days when a candidate
+  pair straddles a month boundary (common with month-end batch postings).
 - UTR/UPI/NEFT/IMPS/RTGS reference numbers are stripped from narrations before
   text-similarity scoring (`extract_utr`, `_INDIAN_PREFIX_RE`) so payment-rail
   noise doesn't distort the match.
 
-**Output:** `FUZZY_MATCHES`, `IGNORED_METADATA`, `AUDIT_INVESTIGATION`
-(items flagged for manual audit, e.g. detected reversals/split-charge
-2nd-halves), and `UNRECONCILED_ITEMS` passed to Phase 3.
+**Output:** Combined `FUZZY_MATCHES`, `PROPOSED_MATCHES`, `M2M_STATS`,
+`IGNORED_METADATA`, `AUDIT_INVESTIGATION` (items flagged for manual audit,
+e.g. detected reversals or possible missing charge halves), and final
+`UNRECONCILED_ITEMS` passed to Phase 3.
 
 ### Phase 3 — Memory Match
 
-`memory_matcher()` using `MatchMemory`
+`MemoryMatcher.match()` using `MatchMemory`
 
 If a `MatchMemory` instance is supplied, the pipeline checks whether any
 remaining GL/bank pair's **normalized counterparty signature**
@@ -198,7 +217,7 @@ recurring vendor payment).
 
 ### Phase 4 — AI Match
 
-`ai_matcher()`
+`AIMatcher.match()`
 
 Uses a local LLM (Ollama, `phi3` model by default) for semantic matching that
 heuristics can't express — e.g. narrations that mean the same thing but use
@@ -253,7 +272,7 @@ ledger/bank pools passed to Phase 5.
 
 ### Phase 5 — Residual Reconciliation
 
-`residual_reconciler.ResidualReconciler.reconcile_residuals()`
+`ResidualReconciler.match()`
 
 The final phase never tries to force a match — it **classifies** each
 remaining item by the type of evidence available, then applies
@@ -392,6 +411,7 @@ The matcher reads typed fields, not arbitrary dictionaries.
   "summary": {
       "ledger_records": int, "bank_records": int,
       "exact_matches": int, "fuzzy_matches": int, "memory_matches": int,
+      "proposed_many_to_many_matches": int, "many_to_many": {...},
       "ai_matches": int, "ai_audit_queue": int,
       "unreconciled_ledger": int, "unreconciled_bank": int,
       "ai_skipped": bool,
@@ -401,6 +421,7 @@ The matcher reads typed fields, not arbitrary dictionaries.
   },
   "EXACT_MATCHES": [...],
   "FUZZY_MATCHES": [...],
+  "PROPOSED_MATCHES": [...],             # M:N candidates routed to review
   "MEMORY_MATCHES": [...],
   "AI_MATCHES": [...],                  # 1-to-1 + many-to-1, annotated
   "AI_AGENT": [...],                    # alias of AI_MATCHES
@@ -430,9 +451,12 @@ all matches uniformly.
 | `LOW_QUALITY_CONFIDENCE_BAR`           | `__init__.py`            | `0.5`   | Threshold for "low confidence" in the quality summary |
 | `_CONFIDENCE_RATIO`                    | `same_side_detect.py`    | `0.65`  | Vote share needed to be "confident" on orientation   |
 | `_MIN_MATCHED_PAIRS`                   | `same_side_detect.py`    | `3`     | Minimum sample votes before rendering an opinion     |
-| `MAX_COMBINATION_SIZE`                 | `fuzzy_matcher/fuzzy_match.py` | `6`       | Max items considered in a many-to-one combination |
-| `MAX_COMBINATION_POOL_SIZE`            | `fuzzy_matcher/fuzzy_match.py` | `40`      | Candidate pool size before combination search |
+| `MAX_COMBINATION_SIZE`                 | `fuzzy_matcher/fuzzy_match.py` | `6`       | Max items considered in a fuzzy combination |
+| `MAX_COMBINATION_POOL_SIZE`            | `matcher/utils/helper.py` | `40`      | Candidate pool size before fuzzy combination search |
 | `_CROSS_MONTH_BUFFER`                  | `fuzzy_matcher/fuzzy_match.py` | `15`      | Extra days allowed when a match spans month-end |
+| `M2M_MAX_COMBINATION_SIZE`             | `fuzzy_matcher/relationship.py` | `5`    | Max rows on either side of an M:N search group |
+| `M2M_MAX_NODES`                        | `fuzzy_matcher/relationship.py` | `300,000` | Enumeration budget per side and direction |
+| `M2M_ACCEPT` / `M2M_REVIEW`            | `fuzzy_matcher/relationship.py` | `0.60 / 0.40` | M:N acceptance and proposal score thresholds |
 | `CONFIDENCE_THRESHOLD`                 | `ai_matcher/ai_matcher.py`      | `0.75`    | Minimum LLM confidence to accept (else → audit queue) |
 | `CANDIDATE_DATE_WINDOW_DAYS`           | `ai_matcher/ai_matcher.py`      | `10`      | Many-to-1 candidate pre-filter window |
 | `BATCH_WINDOW_DAYS`                    | `ai_matcher/ai_matcher.py`      | `30`      | Calendar-day span of each 1-to-1 AI window |
@@ -468,9 +492,14 @@ all matches uniformly.
 
 ## Extending the Pipeline
 
-- **New fuzzy strategy**: add a `match_*` method to `FuzzyMatcher` and append
-  it to the call list in `FuzzyMatcher.run()` — order matters, since each
-  strategy only sees what earlier strategies left behind.
+- **New fuzzy strategy**: add a `match_*` method to `FuzzyMatcher` and add it
+  to `run_standard_strategies()` or `run_specialized_residual_strategies()`.
+  Order matters because each strategy only sees what earlier strategies left
+  behind.
+- **New relationship strategy**: add it to `Relationship` and call it from
+  `Relationship.run()` in the intended order. The package-level
+  `fuzzy_matcher()` will include its accepted matches and residual pools in
+  the result passed to Phase 3.
 - **New memory backend**: implement the `MemoryBackend` protocol (`load()` /
   `save()`) and pass an instance to `MatchMemory(backend=...)`.
 - **Swap the LLM**: pass any object exposing `.invoke()` compatible with

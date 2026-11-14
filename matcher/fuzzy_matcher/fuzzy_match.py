@@ -7,16 +7,15 @@ from typing import Any, Callable, List, Optional, Tuple, Set, Dict
 
 from schema import BankStatement, LedgerFormat, IgnoredMetadataRecord, AuditInvestigationItem
 
-from .subset_sum import find_subsets
-
 from .business_calendar import BusinessCalendar
+
+from ..base import Matcher
 from ..utils.helper import (
     _NSF_RE,
     _INTEREST_RE,
     _REVERSAL_RE,
     MAX_COMBINATION_POOL_SIZE,
     
-    _safe_amount,
     _safe_str,
     _get_amt,
     _get_date,
@@ -24,7 +23,6 @@ from ..utils.helper import (
     _crosses_month_boundary,
     _digit_multiset,
     _to_date,
-    _closest_candidates,
 
     text_similarity as _text_similarity,
     is_transposition,
@@ -62,7 +60,7 @@ class _AmountIndex:
         return self._ids[i:j]
 
 
-class FuzzyMatcher:
+class FuzzyMatcher(Matcher):
     
     SUBSET_MAX_NODES: int = 200_000
     SUBSET_MAX_SOLUTIONS: int = 300
@@ -77,8 +75,13 @@ class FuzzyMatcher:
         tolerances:     Dict[str, float | int] = None,
         calendar:       Optional[BusinessCalendar] = None
     ) -> None:
-        self.ledger_pool:   List[LedgerFormat]  = list(pending_ledger)
-        self.bank_pool:     List[BankStatement] = list(pending_bank)
+        super().__init__(
+            pending_ledger=pending_ledger,
+            pending_bank=pending_bank,
+            same_side=same_side,
+            tolerances=tolerances,
+            calendar=calendar,
+        )
         self.fuzzy_matches: List[Dict[str, Any]]= []
         self.proposed_matches: List[Dict[str, Any]] = []
         self.m2m_stats: Dict[str, int] = {}
@@ -86,7 +89,6 @@ class FuzzyMatcher:
         self.ignored_metadata_records:  List[IgnoredMetadataRecord]  = []
         self.audit_investigation_items: List[AuditInvestigationItem] = []
 
-        self.tolerances: dict = tolerances if tolerances is not None else {}
         self._tol:       float = float(self.tolerances.get("DEFAULT", 1.0))
 
         # Per-strategy tolerance shortcuts (derived once for efficiency)
@@ -95,18 +97,7 @@ class FuzzyMatcher:
         self._tol_transpos:    float = float(self.tolerances.get("TRANSPOSITION",        0.0))
         self._tol_exact:       float = float(self.tolerances.get("EXACT",                0.0))
 
-        # Direction accessors 
-        if same_side:
-            self.gl_out: Callable[[LedgerFormat],  float] = lambda g: _safe_amount(g, "debit_amount")
-            self.gl_in:  Callable[[LedgerFormat],  float] = lambda g: _safe_amount(g, "credit_amount")
-        else:
-            self.gl_out: Callable[[LedgerFormat],  float] = lambda g: _safe_amount(g, "credit_amount")
-            self.gl_in:  Callable[[LedgerFormat],  float]  = lambda g: _safe_amount(g, "debit_amount")
-
-        self.bank_out: Callable[[BankStatement], float] = lambda b: _safe_amount(b, "debit_amount")
-        self.bank_in:  Callable[[BankStatement], float] = lambda b: _safe_amount(b, "credit_amount")
-        
-        self._cal: BusinessCalendar = calendar if calendar is not None else BusinessCalendar.india_banks()
+        self._cal: BusinessCalendar = self.calendar
         self._prepare_calendar()
 
 
@@ -1077,29 +1068,9 @@ class FuzzyMatcher:
             "AUDIT_INVESTIGATION": self.audit_investigation_items,
         }
 
-    def run(self) -> dict:
-        """Compatibility entry point including all relationship strategies."""
-        from .relationship import Relationship
-
+    def match(self) -> dict:
+        """Run the standard fuzzy strategies for this core implementation."""
         self.run_standard_strategies()
-        relationships = Relationship(self)
-        relationships.run_aggregations()
         self.run_specialized_residual_strategies()
-        relationships.match_many_to_many()
         return self.to_result()
 
-
-def fuzzy_matcher(
-    pending_ledger: List[LedgerFormat],
-    pending_bank:   List[BankStatement],
-    tolerances:     dict = None,
-    same_side:      bool = True,
-) -> dict:
-    print("[fuzzy_matcher] starting")
-    return FuzzyMatcher(
-        pending_ledger,
-        pending_bank,
-        same_side  = same_side,
-        tolerances = tolerances,
-    ).run()
-    

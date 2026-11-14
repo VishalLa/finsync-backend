@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from schema import BankStatement, LedgerFormat, AIWindowOutput, AIManyToOneOutput
 from core.config import Config
+from ..base import Matcher
 from .ai_utils import (
     get_shared_llm,
     reset_shared_llm,
@@ -25,7 +26,7 @@ BATCH_WINDOW_DAYS: int = 30
 MAX_RECORDS_PER_WINDOW: int = 20
 
 
-class AIMatcher:
+class AIMatcher(Matcher):
     """
     AI-assisted reconciliation: a 1-to-1 batch matcher over sliding time
     windows, followed by a many-to-1 residual matcher for whatever's left.
@@ -43,12 +44,20 @@ class AIMatcher:
         llm: Optional[ChatOllama] = None,
         tol: float = 0.50,
         same_side: bool = True,
+        pending_ledger: Optional[List[LedgerFormat]] = None,
+        pending_bank: Optional[List[BankStatement]] = None,
     ) -> None:
+        super().__init__(
+            pending_ledger=pending_ledger,
+            pending_bank=pending_bank,
+            config=config,
+            llm=llm,
+            same_side=same_side,
+            tolerances={"AI_MATCHER": tol},
+        )
         self._owns_shared_llm = llm is None
-        self.llm: Optional[ChatOllama] = llm
         self._config = config
         self.tol = tol
-        self.same_side = same_side
 
 
     def _check_connectivity(self) -> Optional[str]:
@@ -427,15 +436,21 @@ class AIMatcher:
 
 
     # Orchestration
-    def run(
+    def match(
         self, 
-        result: Dict[str, Any]
+        result: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Runs both phases against `result` (expects UNRECONCILED_LEDGER,
         UNRECONCILED_BANK, MATCHED keys) and returns a single FINAL_RESULT
         dict, mirroring the shape the rest of the pipeline already expects.
         """
+        if result is None:
+            result = {
+                "UNRECONCILED_LEDGER": self.ledger_pool,
+                "UNRECONCILED_BANK": self.bank_pool,
+                "MATCHED": [],
+            }
         gl_input = result.get("UNRECONCILED_LEDGER", [])
         bk_input = result.get("UNRECONCILED_BANK", [])
 
@@ -505,20 +520,3 @@ class AIMatcher:
                 "FINAL_RESIDUALS_BANK": bk_rem,
             }
         }
-
-
-def ai_match(
-    config: Config,
-    result: Dict[str, Any],
-    tol: float = 0.50,
-    same_side: bool = True,
-    llm: Optional[ChatOllama] = None,
-) -> Dict[str, Any]:
-    print("Starting [AI matcher] ...")
-    matcher = AIMatcher(
-        llm=llm, 
-        tol=tol, 
-        same_side=same_side, 
-        config=config
-    )
-    return matcher.run(result)

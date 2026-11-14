@@ -9,6 +9,7 @@ from langchain_ollama import ChatOllama
 
 from core.config import Config
 from schema import BankStatement, LedgerFormat, DraftAccountSuggestion
+from .base import Matcher
 
 from .utils.helper import (
     MAX_COMBINATION_POOL_SIZE,
@@ -26,11 +27,10 @@ from .ai_matcher.ai_utils import (
     _safe_parse_json,
     get_shared_llm
 )
-from .fuzzy_matcher.subset_sum import find_subsets
-from .fuzzy_matcher.business_calendar import BusinessCalendar
+from .fuzzy_matcher import BusinessCalendar, find_subsets
 
 
-class ResidualReconciler:
+class ResidualReconciler(Matcher):
 
     TIMING_WINDOW_DAYS: int = 45
     SPLIT_TOLERANCE: float = 2.0
@@ -57,19 +57,21 @@ class ResidualReconciler:
         calendar: Optional[BusinessCalendar] = None,
         enable_llm: bool = True,
     ) -> None:
-        self.ledger_pool: List[LedgerFormat] = list(pending_ledger)
-        self.bank_pool: List[BankStatement] = list(pending_bank)
+        super().__init__(
+            pending_ledger=pending_ledger,
+            pending_bank=pending_bank,
+            config=config,
+            llm=llm,
+            same_side=same_side,
+            calendar=calendar,
+            enable_llm=enable_llm,
+        )
         self.residual_matches: List[Dict[str, Any]] = []
-        self.same_side = same_side
-        self.config = config
-        self.enable_llm = enable_llm
         self.llm = llm if llm is not None else (
             get_shared_llm(config=self.config) if enable_llm else None
         )
         
-        self._cal: BusinessCalendar = (
-            calendar if calendar is not None else BusinessCalendar.india_banks()
-        )
+        self._cal: BusinessCalendar = self.calendar
         self._prepare_calendar()
 
 
@@ -685,7 +687,7 @@ class ResidualReconciler:
             })
         return queue
 
-    def reconcile_residuals(self) -> dict:
+    def match(self) -> dict:
 
         classified = self.classify_residuals()
 
@@ -747,6 +749,10 @@ class ResidualReconciler:
             "still_unreconciled_bank": [e["item"] for e in review_bank],
         }
 
+    def reconcile_residuals(self) -> dict:
+        """Compatibility alias for the matcher interface."""
+        return self.match()
+
 
 def reconcile_residuals(
     unreconciled_ledger: List[LedgerFormat],
@@ -764,4 +770,4 @@ def reconcile_residuals(
         llm=llm,
         same_side=same_side,
         enable_llm=enable_llm,
-    ).reconcile_residuals()
+    ).match()

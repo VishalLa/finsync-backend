@@ -1,17 +1,27 @@
 from typing import List, Optional
 
-from .fuzzy_matcher.fuzzy_match import FuzzyMatcher
-from .fuzzy_matcher.relationship import Relationship
-from .exact_match import exact_match as exact_matcher
-from .ai_matcher.ai_matcher import ai_match
+from .fuzzy_matcher import run_fuzzy_matcher, FuzzyMatcher
+from .base import Matcher
+from .exact_match import match as exact_matcher
+from .ai_matcher import AIMatcher
 from .utils.confidence import annotate_match_confidence
 from .same_side_detect import detect_same_side
-from .memory_match import memory_matcher, MatchMemory
-from .residual_reconciler import reconcile_residuals
+from .memory_match import MatchMemory, MemoryMatcher
+from .residual_reconciler import ResidualReconciler
 
 from core.config import Config
 
 from langchain_ollama import ChatOllama
+
+__all__ = [
+    "Matcher",
+    "FuzzyMatcher",
+    "AIMatcher",
+    "MemoryMatcher",
+    "ResidualReconciler",
+    "MatchMemory",
+    "reconcile",
+]
 
 TOLERANCES = {
     "EXACT":              0.0,
@@ -100,18 +110,12 @@ def reconcile(
     print(f"[reconcile] Phase 1: exact matching complete ({len(exact_match_result.get('EXACT_MATCHES', []))} matches)")
 
     print("[reconcile] Phase 2: fuzzy matching starting")
-    fuzzy_engine = FuzzyMatcher(
+    fuzzy_match_result = run_fuzzy_matcher(
         pending_ledger=exact_match_result.get("PENDING_FUZZY_LEDGER", []),
         pending_bank=exact_match_result.get("PENDING_FUZZY_BANK", []),
         tolerances=TOLERANCES,
         same_side=same_side,
     )
-    fuzzy_engine.run_standard_strategies()
-    relationship_engine = Relationship(fuzzy_engine)
-    relationship_engine.run_aggregations()
-    fuzzy_engine.run_specialized_residual_strategies()
-    relationship_engine.match_many_to_many()
-    fuzzy_match_result = fuzzy_engine.to_result()
     print(f"[reconcile] Phase 2: fuzzy matching complete ({len(fuzzy_match_result.get('FUZZY_MATCHES', []))} matches)")
 
     residual_ledger = fuzzy_match_result["UNRECONCILED_ITEMS"]["ledger"]
@@ -121,13 +125,14 @@ def reconcile(
 
     print("[reconcile] Phase 3: memory matching starting")
     if memory is not None and residual_ledger and residual_bank:
-        memory_matches, residual_ledger, residual_bank = memory_matcher(
-            residual_bank=residual_bank,
-            residual_ledger=residual_ledger,
+        memory_engine = MemoryMatcher(
+            pending_ledger=residual_ledger,
+            pending_bank=residual_bank,
             memory=memory,
             same_side=same_side,
             amount_tol=TOLERANCES.get("TIMING_DIFFERENCE", 2.0),
         )
+        memory_matches, residual_ledger, residual_bank = memory_engine.match()
         print(f"[reconcile] Phase 3: memory matching complete ({len(memory_matches)} matches)")
     elif memory is None:
         print("[reconcile] Phase 3: memory matching skipped (no memory store)")
@@ -142,13 +147,15 @@ def reconcile(
 
     if enable_ai_matching:
         print(f"[reconcile] Phase 4: AI matching starting ({len(residual_ledger)} ledger, {len(residual_bank)} bank)")
-        ai_pipeline_output = ai_match(
+        ai_engine = AIMatcher(
             config=config,
-            result=ai_input_payload,
+            pending_ledger=residual_ledger,
+            pending_bank=residual_bank,
             tol=TOLERANCES.get("AI_MATCHER", 5.0),
             same_side=same_side,
-            llm=llm
+            llm=llm,
         )
+        ai_pipeline_output = ai_engine.match(ai_input_payload)
         ai_matcher_result = ai_pipeline_output["FINAL_RESULT"]
         print("[reconcile] Phase 4: AI matching complete")
     else:
@@ -194,14 +201,15 @@ def reconcile(
         print("[reconcile] Phase 5: residual reconciliation skipped (disabled)")
     elif final_unreconciled["ledger"] or final_unreconciled["bank"]:
         print(f"[reconcile] Phase 5: residual reconciliation starting ({len(final_unreconciled['ledger'])} ledger, {len(final_unreconciled['bank'])} bank)")
-        residual_result = reconcile_residuals(
-            unreconciled_ledger=final_unreconciled["ledger"],
-            unreconciled_bank=final_unreconciled["bank"],
+        residual_engine = ResidualReconciler(
+            pending_ledger=final_unreconciled["ledger"],
+            pending_bank=final_unreconciled["bank"],
             config=config,
             same_side=same_side,
             llm=llm,
             enable_llm=enable_ai_matching,
         )
+        residual_result = residual_engine.match()
         print("[reconcile] Phase 5: residual reconciliation complete")
         if residual_result["stats"].get("ai_skipped"):
             all_warnings.append(

@@ -32,7 +32,7 @@ def _date_key(rec: object, is_bank: bool) -> Optional[str]:
     return d.isoformat() if d else raw
 
 
-def exact_match(
+def match(
     gl_records: List[LedgerFormat], 
     bank_records: List[BankStatement],
     same_side: bool = True,        # True = cashbook, False = standard GL

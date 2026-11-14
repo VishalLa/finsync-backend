@@ -390,6 +390,33 @@ class PushBankRecData:
                 raw_ledger_id = m.get("ledger_id")
                 raw_bank_id = m.get("bank_id")
 
+                if "ledger_components" in m and "bank_components" in m:
+                    component_note = (
+                        (details + " " if details else "")
+                        + "(many-to-many group component relation)"
+                    )
+                    for ledger_component in m["ledger_components"]:
+                        for bank_component in m["bank_components"]:
+                            db_rows.append(
+                                base_row(
+                                    m=m,
+                                    match_type=match_type,
+                                    ledger_fk=resolve_ledger(
+                                        ledger_component.get(
+                                            "ledger_id", ledger_component.get("id")
+                                        )
+                                    ),
+                                    bank_fk=resolve_bank(
+                                        bank_component.get(
+                                            "bank_id", bank_component.get("id")
+                                        )
+                                    ),
+                                    amount=None,
+                                    details=component_note,
+                                )
+                            )
+                    return
+
                 if "ledger_components" in m:
                     bank_fk = resolve_bank(raw_bank_id)
                     for comp in m["ledger_components"]:

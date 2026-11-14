@@ -30,10 +30,10 @@ matcher_package = importlib.util.module_from_spec(package_spec)
 sys.modules["matcher"] = matcher_package
 package_spec.loader.exec_module(matcher_package)
 
+from core.config import Config  # noqa: E402
 from matcher import MatchMemory, reconcile  # noqa: E402
 from matcher.memory_match import JSONFileBackend  # noqa: E402
 from schema import BankStatement, LedgerFormat  # noqa: E402
-from shared.settings import Settings  # noqa: E402
 
 
 def _key(value: str) -> str:
@@ -146,9 +146,13 @@ def main() -> int:
     try:
         ledger_records = _ledger_records(ledger_path)
         bank_records = _bank_records(bank_path)
-        config = Settings(
+        config = Config(
             _env_file=None,
+            DEBUG=False,
+            SECRET_KEY="local-matcher-cli",
+            JWT_SECRET_KEY="local-matcher-cli",
             REDIS_URL="redis://127.0.0.1:6379/0",
+            DATABASE_URL="sqlite:////tmp/latice-matcher-cli.sqlite",
             STORAGE_DIR="/tmp/latice-matcher-cli-storage",
         )
         memory = MatchMemory(JSONFileBackend(args.memory)) if args.memory else MatchMemory()
@@ -169,8 +173,6 @@ def main() -> int:
             enable_ai_matching=args.with_ai,
             enable_residual_reconciliation=True,
         )
-        if args.memory:
-            memory.save()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(_jsonable(result), indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as exc:

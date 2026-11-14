@@ -32,13 +32,12 @@ def _date_key(rec: object, is_bank: bool) -> Optional[str]:
     return d.isoformat() if d else raw
 
 
-def exact_match(
+def match(
     gl_records: List[LedgerFormat], 
     bank_records: List[BankStatement],
     same_side: bool = True,        # True = cashbook, False = standard GL
     amount_tol: float = _DEFAULT_AMOUNT_TOL,  # driven by TOLERANCES["EXACT"]
     strict_ref_conflict: bool = False,
-    show: bool = True
 ) -> Dict[str, Any]:
     tol_c = _cents(amount_tol)
 
@@ -164,3 +163,8 @@ def exact_match(
         "PENDING_FUZZY_LEDGER": pending_ledger,
         "PENDING_FUZZY_BANK": pending_bank,
     }
+
+
+def exact_match(*args, **kwargs):
+    """Backward-compatible name for the exact matching function."""
+    return match(*args, **kwargs)

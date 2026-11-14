@@ -4,16 +4,20 @@ import json
 
 from langchain_core.runnables import RunnableLambda
 
+from core.config import Config
 from matcher.ai_matcher.ai_matcher import ai_match
 from matcher.residual_reconciler import reconcile_residuals
 from schema import BankStatement, LedgerFormat
-from shared.settings import Settings
 
 
-def _config() -> Settings:
-    return Settings(
+def _config() -> Config:
+    return Config(
         _env_file=None,
+        DEBUG=False,
+        SECRET_KEY="test-only",
+        JWT_SECRET_KEY="test-only",
         REDIS_URL="redis://127.0.0.1:6379/0",
+        DATABASE_URL="sqlite:////tmp/latice-matcher-tests.sqlite",
         STORAGE_DIR="/tmp/latice-matcher-tests-storage",
     )
 

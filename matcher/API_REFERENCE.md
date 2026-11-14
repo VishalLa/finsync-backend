@@ -308,10 +308,9 @@ then `confidence_score`, and assumes 1.0 only when both fields are absent.
 
 ## Package files and service files
 
-`fuzzy_matcher/__init__.py` re-exports `FuzzyMatcher`, `fuzzy_matcher`,
-`BusinessCalendar`, `SubsetSearch`, and `find_subsets` through `__all__`.
-`ai_matcher/__init__.py` and `utils/__init__.py` are empty and export no names;
-import those APIs from their implementation modules.
+`fuzzy_matcher/__init__.py` re-exports `FuzzyMatcher`, `Relationship`,
+`run_fuzzy_matcher`, `BusinessCalendar`, and `find_subsets`. The AI package
+exports `AIMatcher` and the `ai_match` compatibility wrapper.
 
 `tasks.py` exposes the Celery `run_matcher(self, payload)` task; the payload
 is validated as a matcher-run message, and the task returns a status mapping

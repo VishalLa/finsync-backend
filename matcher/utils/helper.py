@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Optional, List, Tuple, Callable
+from typing import Any, Optional, List, Tuple, Callable, Set
 from datetime import date as _date
 from difflib import SequenceMatcher
 
@@ -233,5 +233,67 @@ def _closest_candidates(
     
     ranked = sorted(valid, key=combined_score, reverse=True)
     return ranked[:max_pool]
+
+
+def record_dates(records: List[Any], attr: str) -> list:
+    """Parse one date attribute for a batch of records."""
+    return [_to_date(_safe_str(record, attr)) for record in records]
+
+
+def business_day_lag(calendar: Any, start, end) -> int:
+    """Signed open-day lag, shared by fuzzy and relationship strategies."""
+    return calendar.lag(start, end)
+
+
+def business_day_window(base: int, start, end, cross_month_buffer: int) -> int:
+    """Expand a business-day window when two dates cross a month boundary."""
+    if (start.year, start.month) != (end.year, end.month):
+        return base + cross_month_buffer
+    return base
+
+
+def edge_tie_key(ledger_indices, bank_indices, ledger_records, bank_records) -> tuple:
+    """Stable tie key based on business identifiers instead of pool positions."""
+    return (
+        tuple(str(getattr(ledger_records[i], "ledger_id", "")) for i in ledger_indices),
+        tuple(str(getattr(bank_records[i], "row_index", "")) for i in bank_indices),
+    )
+
+
+def select_match_edges(edges, used_ledger: Set[int], used_bank: Set[int], ledger_records, bank_records):
+    """Greedily select highest-scoring non-overlapping edges with stable ties."""
+    edges.sort(key=lambda edge: (
+        -edge[0], edge_tie_key(edge[1], edge[2], ledger_records, bank_records)
+    ))
+    accepted = []
+    for _score, ledger_indices, bank_indices, build in edges:
+        if any(i in used_ledger for i in ledger_indices):
+            continue
+        if any(i in used_bank for i in bank_indices):
+            continue
+        used_ledger.update(ledger_indices)
+        used_bank.update(bank_indices)
+        accepted.append((ledger_indices, bank_indices, build))
+    return accepted
+
+
+def emit_match_edges(accepted, ledger_records, bank_records, matches, audit_items) -> None:
+    """Build selected matches in deterministic order and append their audit items."""
+    accepted.sort(key=lambda item: edge_tie_key(item[0], item[1], ledger_records, bank_records))
+    for _ledger_indices, _bank_indices, build in accepted:
+        match, audit = build()
+        matches.append(match)
+        if audit is not None:
+            audit_items.append(audit)
+
+
+def rebuild_unmatched_pools(matcher, ledger_records, bank_records, used_ledger, used_bank) -> None:
+    """Rebuild both pools by record identity through the selected index sets."""
+    matcher.ledger_pool = [
+        record for index, record in enumerate(ledger_records) if index not in used_ledger
+    ]
+    matcher.bank_pool = [
+        record for index, record in enumerate(bank_records) if index not in used_bank
+    ]
     
     

@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Protocol, Tuple, Set
 
 from schema import RecognizedPattern
 
+from .base import Matcher
 from .utils.helper import _STOPWORDS, _INDIAN_PREFIX_RE, _amounts_equal
 
 _VPA_RE = re.compile(r"@[a-z0-9.\-]+", re.I)
@@ -303,6 +304,10 @@ class MatchMemory:
         for m in matches:
             lid = str(m.get("ledger_id", ""))
             bid = str(m.get("bank_id", ""))
+            # Composite ids are intentionally not learned as a single-row pattern.
+            # Component-aware memory would require a different pattern schema.
+            if " & " in lid or " & " in bid:
+                continue
             ledger_text = gl_by_id.get(lid)
             bank_text   = bank_by_id.get(bid)
             if ledger_text is None or bank_text is None:
@@ -421,3 +426,33 @@ def memory_matcher(
         [record for record_id, record in gl_by_id.items() if record_id not in used_ledger],
         [record for record_id, record in bank_by_id.items() if record_id not in used_bank],
     )
+
+
+class MemoryMatcher(Matcher):
+    """Class interface for matching records against saved memory patterns."""
+
+    def __init__(
+        self,
+        pending_ledger: list,
+        pending_bank: list,
+        memory: MatchMemory,
+        same_side: bool = True,
+        amount_tol: float = 2.0,
+    ) -> None:
+        super().__init__(
+            pending_ledger=pending_ledger,
+            pending_bank=pending_bank,
+            same_side=same_side,
+            tolerances={"DEFAULT": amount_tol},
+        )
+        self.memory = memory
+        self.amount_tol = amount_tol
+
+    def match(self) -> Tuple[List[dict], list, list]:
+        return memory_matcher(
+            residual_ledger=self.ledger_pool,
+            residual_bank=self.bank_pool,
+            memory=self.memory,
+            same_side=self.same_side,
+            amount_tol=self.amount_tol,
+        )

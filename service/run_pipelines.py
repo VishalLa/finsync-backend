@@ -168,6 +168,7 @@ class RunBankRec:
         ledger_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         bank_name: Optional[str] = None,
+        enable_ai_matching: bool = True,
     ) -> Dict[str, Any]:
         """
         Full pipeline: load files → reconcile → persist → generate report.
@@ -235,6 +236,7 @@ class RunBankRec:
             ledger_result=ledger_data,
             bank_result=bank_data,
             all_warnings=all_warnings,
+            enable_ai_matching=enable_ai_matching,
         )
         
         all_matches = self._collect_all_matches(result)

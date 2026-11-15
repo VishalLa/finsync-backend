@@ -49,7 +49,16 @@ def start_reconciliation():
     bank_file = request.files.get("bank_file")
     run_name = (request.form.get("run_name") or "").strip() or None
     bank_name = (request.form.get("bank_name") or "").strip() or None
-    
+    raw_enable_ai = (request.form.get("enable_ai_matching") or "true").strip().lower()
+
+    if raw_enable_ai not in {"true", "false", "1", "0", "yes", "no"}:
+        return jsonify({
+            "ok": False,
+            "error": "enable_ai_matching must be a boolean"
+        }), 400
+
+    enable_ai_matching = raw_enable_ai in {"true", "1", "yes"}
+
     if not ledger_file or not bank_file or not ledger_file.filename or not bank_file.filename:
         return jsonify({
             "ok": False, 
@@ -85,7 +94,7 @@ def start_reconciliation():
 
     task = run_reconciliation_pipeline.apply_async(
         args=[ledger_path, bank_path, run_name, str(get_jwt_identity())],
-        kwargs={"bank_name": bank_name},
+        kwargs={"bank_name": bank_name, "enable_ai_matching": enable_ai_matching},
     )
     return jsonify({
         "ok": True,
@@ -93,6 +102,7 @@ def start_reconciliation():
         "task_id": task.id,
         "run_name": run_name,
         "bank_name": bank_name,
+        "enable_ai_matching": enable_ai_matching,
         "status_url": f"/api/bank-rec/reconciliation/{task.id}/status",
     }), 202
 

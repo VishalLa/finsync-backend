@@ -272,8 +272,26 @@ class DatabaseManager:
                     self._migrate_legacy_sessions_table()
             self._migrate_ledger_format_run_uniqueness()
             Base.metadata.create_all(engine)
+            self._migrate_bill_run_name()
 
         self.execute_raw(_init)
+
+    def _migrate_bill_run_name(self) -> None:
+        """Add optional bill grouping to databases created before run names."""
+        inspector = inspect(self.engine)
+        if not inspector.has_table("bill"):
+            return
+        columns = {column["name"] for column in inspector.get_columns("bill")}
+        if "run_name" in columns:
+            return
+        quote = self.engine.dialect.identifier_preparer.quote
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"ALTER TABLE {quote('bill')} "
+                    f"ADD COLUMN {quote('run_name')} VARCHAR(120)"
+                )
+            )
 
     def _migrate_ledger_format_run_uniqueness(self) -> None:
         """Scope ledger ID uniqueness to a reconciliation run."""

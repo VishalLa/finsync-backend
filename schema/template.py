@@ -48,12 +48,12 @@ AXIS_V1 = _t(
     version="v1",
     date_column="Tran Date", 
     date_format="%d-%m-%Y", 
-    narration_column="PARTICULARS",
-    debit_column="DEBIT", 
-    credit_column="CREDIT", 
-    txn_id_column="CHQNO",
-    balance_column="BALANCE",
-    fingerprint={"Tran Date", "PARTICULARS", "CHQNO", "DEBIT", "CREDIT", "BALANCE"},
+    narration_column="Particulars",
+    debit_column="Debit", 
+    credit_column="Credit", 
+    txn_id_column="Chq No",
+    balance_column="Balance",
+    fingerprint={"Tran Date", "Particulars", "Debit", "Credit", "Balance"},
 )
 
 HDFC_V1 = _t(

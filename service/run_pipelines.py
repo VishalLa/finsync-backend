@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from matcher import reconcile
 from ledger import TDSEngine, GSTR1Builder, JournalBuilder
-from database import BillModel, JournalEntryModel
+from database import BillModel, GSTR1RecordModel, JournalEntryModel
 
 from entry_point import (
     Block,
@@ -167,6 +167,7 @@ class RunBankRec:
         date_format: str = "%d-%m-%Y",
         ledger_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
+        bank_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Full pipeline: load files → reconcile → persist → generate report.
@@ -186,6 +187,10 @@ class RunBankRec:
         if ledger_data is None:
             ledger_data = load_ledger(filepath=ledger_path, date_format=date_format)
         bank_data = load_bank_statement(filepath=bank_path)
+        if bank_name:
+            bank_data["bank_name"] = bank_name
+            for record in bank_data.get("records", []):
+                record.bank_name = bank_name
         
         gl_records = ledger_data.get("records", [])
         bank_records = bank_data.get("records", [])
@@ -375,6 +380,7 @@ class RunBill:
         self,
         user_id: str,
         direction: str,
+        run_name: Optional[str] = None,
         source_file: Optional[str] = None,
         raw_extracted_data: Optional[dict] = None,
     ) -> str:
@@ -382,6 +388,7 @@ class RunBill:
             bill = BillModel(
                 user_id=user_id,
                 direction=direction,
+                run_name=run_name,
                 source_file=source_file,
                 raw_extracted_data=raw_extracted_data,
                 status="pending",
@@ -399,6 +406,7 @@ class RunBill:
         user_id: str,
         status: Optional[str] = None,
         direction: Optional[str] = None,
+        run_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """List a user's bills, optionally filtered by processing status or direction."""
         def _op(session: Session) -> Dict[str, Any]:
@@ -407,6 +415,8 @@ class RunBill:
                 query = query.filter(BillModel.status == status)
             if direction:
                 query = query.filter(BillModel.direction == direction)
+            if run_name:
+                query = query.filter(BillModel.run_name == run_name)
 
             bills = query.order_by(BillModel.created_at.desc()).limit(200).all()
             return {
@@ -417,6 +427,7 @@ class RunBill:
                         "vendor_name": bill.vendor_name,
                         "invoice_number": bill.invoice_number,
                         "direction": bill.direction,
+                        "run_name": bill.run_name,
                         "bill_date": bill.bill_date.isoformat() if bill.bill_date else None,
                         "status": bill.status,
                         "error_message": bill.error_message,
@@ -564,6 +575,7 @@ class RunBill:
             ]
 
             gstr1 = GSTR1Builder(bill_dicts).build(period_label=period_label)
+            gstr1["bills_considered"] = len(bill_dicts)
 
             ok = self.ledger_service.replace_gstr1_period(
                 user_id=user_id,
@@ -577,6 +589,65 @@ class RunBill:
                 "bills_considered": len(bill_dicts),
                 "totals": gstr1.get("totals", {}),
                 "warnings": gstr1.get("warnings", []),
+            }
+
+        return self.db_manager.run(_op)
+
+
+    @_log_call
+    def get_gstr1(self, user_id: str, period_label: str) -> Optional[Dict[str, Any]]:
+        """Return the user's persisted GSTR-1 data for one filing period."""
+        def _op(session: Session) -> Optional[Dict[str, Any]]:
+            rows = session.query(GSTR1RecordModel).filter(
+                GSTR1RecordModel.user_id == user_id,
+                GSTR1RecordModel.period_label == period_label,
+            ).order_by(GSTR1RecordModel.id.asc()).all()
+            if not rows:
+                return None
+
+            grouped: Dict[str, List[Dict[str, Any]]] = {
+                "b2b": [],
+                "b2c_large": [],
+                "hsn_summary": [],
+            }
+            nil_rated: Dict[str, Any] = {}
+            metadata: Dict[str, Any] = {}
+            for row in rows:
+                raw = row.raw or row.to_dict()
+                if row.table_type == "metadata":
+                    metadata = raw
+                elif row.table_type == "nil_rated":
+                    nil_rated = raw
+                elif row.table_type in grouped:
+                    grouped[row.table_type].append(raw)
+
+            b2b, b2c = grouped["b2b"], grouped["b2c_large"]
+            totals = metadata.get("totals") or {
+                "b2b_invoice_count": len(b2b),
+                "b2b_taxable": round(sum(row.get("taxable_value", 0) for row in b2b), 2),
+                "b2b_cgst": round(sum(row.get("cgst", 0) for row in b2b), 2),
+                "b2b_sgst": round(sum(row.get("sgst", 0) for row in b2b), 2),
+                "b2b_igst": round(sum(row.get("igst", 0) for row in b2b), 2),
+                "b2b_cess": round(sum(row.get("cess", 0) for row in b2b), 2),
+                "b2c_large_taxable": round(sum(row.get("taxable_value", 0) for row in b2c), 2),
+                "b2c_large_igst": round(sum(row.get("igst", 0) for row in b2c), 2),
+                "total_taxable": round(
+                    sum(row.get("taxable_value", 0) for row in b2b + b2c), 2
+                ),
+                "total_tax": round(sum(
+                    row.get("cgst", 0) + row.get("sgst", 0)
+                    + row.get("igst", 0) + row.get("cess", 0)
+                    for row in b2b + b2c
+                ), 2),
+            }
+            return {
+                "status": "success",
+                "period_label": period_label,
+                "bills_considered": metadata.get("bills_considered", len(b2b)),
+                **grouped,
+                "nil_rated": nil_rated,
+                "totals": totals,
+                "warnings": metadata.get("warnings", []),
             }
 
         return self.db_manager.run(_op)

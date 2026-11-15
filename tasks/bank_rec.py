@@ -65,6 +65,7 @@ def run_reconciliation_pipeline(
     bank_path: str,
     run_name: Optional[str] = None,
     user_id: Optional[str] = None,
+    bank_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     run_bank_rec = get_run_bank_rec()
     
@@ -75,6 +76,7 @@ def run_reconciliation_pipeline(
             bank_path=bank_path,
             run_name=run_name,
             user_id=user_id,
+            bank_name=bank_name,
         )
     except Exception as exc:
         max_retries = self.max_retries if self.max_retries is not None else 3

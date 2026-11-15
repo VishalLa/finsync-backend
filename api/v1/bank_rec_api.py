@@ -38,7 +38,7 @@ def _services() -> Tuple[RunBankRec, ResultBankRec, RecJournalPosting]:
 
 
 def _allowed(filename: str) -> bool:
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in {"csv", "xlsx"}
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in {"csv", "xlsx", "pdf"}
 
 
 @app.route("/reconciliation", methods=["POST"])
@@ -48,6 +48,7 @@ def start_reconciliation():
     ledger_file = request.files.get("ledger_file")
     bank_file = request.files.get("bank_file")
     run_name = (request.form.get("run_name") or "").strip() or None
+    bank_name = (request.form.get("bank_name") or "").strip() or None
     
     if not ledger_file or not bank_file or not ledger_file.filename or not bank_file.filename:
         return jsonify({
@@ -55,11 +56,17 @@ def start_reconciliation():
             "error": "ledger_file and bank_file are required"
         }), 400
         
-    if not _allowed(ledger_file.filename) or not _allowed(bank_file.filename):
+    if not _allowed(ledger_file.filename) or not (
+        "." in bank_file.filename
+        and bank_file.filename.rsplit(".", 1)[1].lower() in {"csv", "xlsx"}
+    ):
         return jsonify({
             "ok": False, 
-            "error": "Only CSV and XLSX files are supported"
+            "error": "Ledger files must be CSV, XLSX, or PDF; bank statements must be CSV or XLSX"
         }), 400
+
+    if bank_name and len(bank_name) > 128:
+        return jsonify({"ok": False, "error": "bank_name must be 128 characters or fewer"}), 400
 
     config = Config.from_env()
     run_token = uuid.uuid4().hex[:12]
@@ -77,13 +84,15 @@ def start_reconciliation():
     bank_file.save(bank_path)
 
     task = run_reconciliation_pipeline.apply_async(
-        args=[ledger_path, bank_path, run_name, str(get_jwt_identity())]
+        args=[ledger_path, bank_path, run_name, str(get_jwt_identity())],
+        kwargs={"bank_name": bank_name},
     )
     return jsonify({
         "ok": True,
         "run_id": task.id,
         "task_id": task.id,
         "run_name": run_name,
+        "bank_name": bank_name,
         "status_url": f"/api/bank-rec/reconciliation/{task.id}/status",
     }), 202
 

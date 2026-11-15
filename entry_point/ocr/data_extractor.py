@@ -1,5 +1,7 @@
 import re
-from .ocr import Block
+from typing import Any, Dict, List
+
+from ._ocr import Block
 
 try:
     from dateutil import parser as _dateparser
@@ -70,7 +72,7 @@ def to_float(text) -> float | None:
     return None
 
 
-def all_gstins(blocks: list[Block]) -> list[str]:
+def all_gstins(blocks: List[Block]) -> List[str]:
     seen, result = set(), []
     for b in blocks:
         for m in GSTIN.finditer(b.text):
@@ -80,7 +82,7 @@ def all_gstins(blocks: list[Block]) -> list[str]:
     return result
 
 
-def first_date(blocks: list[Block]) -> str | None:
+def first_date(blocks: List[Block]) -> str | None:
     # Strategy 1: scan each block individually (top-to-bottom)
     for b in sorted(blocks, key=lambda b: b.y):
         m = DATE.search(b.text)
@@ -93,7 +95,9 @@ def first_date(blocks: list[Block]) -> str | None:
     return _normalize_date(m.group(1)) if m else None
 
 
-def find_percent_near_keyword(rows: list[list[Block]], keywords: list[str]) -> float | None:
+def find_percent_near_keyword(
+    rows: List[List[Block]], keywords: List[str]
+) -> float | None:
     kl = [k.lower() for k in keywords]
     for row in rows:
         row_text = ' '.join(b.text for b in row)
@@ -114,7 +118,9 @@ def classify(cgst, sgst, igst, gstin) -> str:
     return "Retail Bill"
 
 
-def group_into_rows(blocks: list[Block], y_tolerance: int = 8) -> list[list[Block]]:
+def group_into_rows(
+    blocks: List[Block], y_tolerance: int = 8
+) -> List[List[Block]]:
     if not blocks:
         return []
     rows = []
@@ -132,7 +138,7 @@ def group_into_rows(blocks: list[Block], y_tolerance: int = 8) -> list[list[Bloc
 
 
 def find_value_right_of(
-    rows: list[list[Block]], keywords: list[str], min_x_gap: int = 30
+    rows: List[List[Block]], keywords: List[str], min_x_gap: int = 30
 ) -> str | None:
     keywords = [k.lower() for k in keywords]
         
@@ -152,7 +158,7 @@ def find_value_right_of(
     return None 
 
 def find_amount_right_of(
-    rows: list[list[Block]], keywords: list[str]
+    rows: List[List[Block]], keywords: List[str]
 ) -> float | None:
     val = find_value_right_of(rows, keywords)
     if val:
@@ -160,7 +166,7 @@ def find_amount_right_of(
     return None 
 
 def find_amount_below(
-    rows: list[list[Block]], keywords: list[str], x_tolerance: int = 70, max_rows_below: int = 2
+    rows: List[List[Block]], keywords: List[str], x_tolerance: int = 70, max_rows_below: int = 2
 ) -> float | None:
 
     keywords = [k.lower() for k in keywords]
@@ -178,7 +184,7 @@ def find_amount_below(
     return None 
 
 
-def rightmost_number_in_row(row: list[Block]) -> float | None:
+def rightmost_number_in_row(row: List[Block]) -> float | None:
     for block in reversed(row):
         matches = NUM.findall(block.text)
         if matches:
@@ -190,8 +196,8 @@ def rightmost_number_in_row(row: list[Block]) -> float | None:
 
 
 def find_row_with_keyword(
-    rows: list[list[Block]], keywords: list[str]
-) -> list[Block] | None:
+    rows: List[List[Block]], keywords: List[str]
+) -> List[Block] | None:
     kl = [k.lower() for k in keywords]
     for row in rows:
         row_text = ' '.join(b.text.lower() for b in row)
@@ -200,11 +206,11 @@ def find_row_with_keyword(
     return None
 
 
-def rows_to_lines(rows: list[list[Block]]) -> list[str]:
+def rows_to_lines(rows: List[List[Block]]) -> List[str]:
     return [' '.join(b.text for b in row) for row in rows]
 
 
-def find_invoice_no(rows: list[list[Block]]) -> str | None:
+def find_invoice_no(rows: List[List[Block]]) -> str | None:
 
     keywords_stat_1 = ['invoice no', 'invoice number', 'invoice#', 'bill no', 'bill number', 'inv no']
     
@@ -228,7 +234,7 @@ def find_invoice_no(rows: list[list[Block]]) -> str | None:
     return None
 
 
-def find_vendor_name(blocks: list[Block]) -> str | None:
+def find_vendor_name(blocks: List[Block]) -> str | None:
     # Sort by y, then x — top-left first
     sorted_blocks = sorted(blocks, key=lambda b: (b.y, b.x))
     for b in sorted_blocks[:15]:
@@ -252,7 +258,7 @@ def find_vendor_name(blocks: list[Block]) -> str | None:
     return None
 
 
-def find_buyer_name(rows: list[list[Block]]) -> str | None:
+def find_buyer_name(rows: List[List[Block]]) -> str | None:
     BUYER_KW = [
         'buyer', 
         'bill to', 
@@ -287,7 +293,7 @@ def find_buyer_name(rows: list[list[Block]]) -> str | None:
     return None
 
 
-def _pick_tax_amount(row: list[Block], rate: float | None) -> float | None:
+def _pick_tax_amount(row: List[Block], rate: float | None) -> float | None:
     nums = []
     for b in row:
         for m in NUM.finditer(b.text):
@@ -311,7 +317,7 @@ def _pick_tax_amount(row: list[Block], rate: float | None) -> float | None:
 
 #  TAX AMOUNTS — coordinate-aware
 #  Strategy: find the label block (CGST/SGST/IGST), then get the rightmost
-def find_tax_amounts(rows: list[list[Block]]) -> dict:
+def find_tax_amounts(rows: List[List[Block]]) -> Dict[str, Any]:
     result = {
         'cgst_amount': None, 'cgst_rate': None,
         'sgst_amount': None, 'sgst_rate': None,
@@ -516,7 +522,7 @@ def _lookup_hsn_by_description(desc: str) -> str | None:
             best_len = len(kw)
     return best
 
-def find_items(rows: list[list[Block]]) -> list[dict]:
+def find_items(rows: List[List[Block]]) -> List[Dict[str, Any]]:
     SKIP = {'total', 'cgst', 'sgst', 'igst', 'tax', 'subtotal', 'grand', 'discount', 'cess', 'round', 'taxable', 'summary', 'amount', 'description', 'product', 'particulars', 'goods', 'service', 'sr', 'sl', 'no', 'hsn', 'sac', 'qty', 'rate', 'mrp', 'per', 'disc', 'si', 'central', 'state', 'integrated'}
 
     # Find the table header row (contains "description" or "particulars" + "amount")
@@ -609,7 +615,7 @@ def find_items(rows: list[list[Block]]) -> list[dict]:
     return items if items else _fallback_items(rows)
 
 
-def _fallback_items(rows: list[list[Block]]) -> list[dict]:
+def _fallback_items(rows: List[List[Block]]) -> List[Dict[str, Any]]:
     """Last resort item extraction."""
     items = []
     SKIP = {
@@ -665,7 +671,7 @@ def _fallback_items(rows: list[list[Block]]) -> list[dict]:
     ]
 
 
-def detect_type(blocks: list[Block]) -> str:
+def detect_type(blocks: List[Block]) -> str:
     full = ' '.join(b.text for b in blocks).lower()
 
     if re.search(r'\birn\b', full) or re.search(r'\back\s*(no|date)\b', full):
@@ -692,7 +698,7 @@ def detect_type(blocks: list[Block]) -> str:
 
 
 #  PLACE OF SUPPLY
-def find_place_of_supply(rows: list[list[Block]]) -> str | None:
+def find_place_of_supply(rows: List[List[Block]]) -> str | None:
     val = find_value_right_of(rows, ['place of supply'])
     if val:
         return val.strip()[:60]
@@ -705,7 +711,7 @@ def find_place_of_supply(rows: list[list[Block]]) -> str | None:
     return None
 
 #  AMOUNT IN WORDS
-def find_amount_words(rows: list[list[Block]]) -> str | None:
+def find_amount_words(rows: List[List[Block]]) -> str | None:
     for row in rows:
         row_text = ' '.join(b.text for b in row)
         rl = row_text.lower()
@@ -716,7 +722,9 @@ def find_amount_words(rows: list[list[Block]]) -> str | None:
     return None
 
 
-def detect_return_type(rows: list[list[Block]], blocks: list[Block]) -> str | None:
+def detect_return_type(
+    rows: List[List[Block]], blocks: List[Block]
+) -> str | None:
     """Detect credit note / debit note from PDF/invoice text."""
     full = ' '.join(b.text for b in blocks).lower()
     row_texts = [' '.join(b.text for b in row).lower() for row in rows]
@@ -736,7 +744,7 @@ def detect_return_type(rows: list[list[Block]], blocks: list[Block]) -> str | No
     return None
 
 #  PAYMENT MODE
-def find_payment_mode(rows: list[list[Block]]) -> str | None:
+def find_payment_mode(rows: List[List[Block]]) -> str | None:
     for row in rows:
         row_text = ' '.join(b.text for b in row).lower()
         if any(k in row_text for k in ['paid by', 'payment mode', 'pay using', 'mode of payment', 'payment method']):
@@ -843,7 +851,7 @@ def classify_direction(data: dict, inv_type: str) -> str:
 
 
 
-def parse_invoice(blocks: list[Block]) -> dict:
+def parse_invoice(blocks: List[Block]) -> Dict[str, Any]:
     rows = group_into_rows(blocks)
 
     gs          = all_gstins(blocks)

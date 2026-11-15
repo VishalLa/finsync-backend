@@ -281,6 +281,22 @@ class PushLedgerData:
                     raw=row,
                 ))
 
+            rows.append(GSTR1RecordModel(
+                user_id=user_id,
+                period_label=period_label,
+                table_type="metadata",
+                taxable_value=0.0,
+                igst=0.0,
+                cgst=0.0,
+                sgst=0.0,
+                cess=0.0,
+                raw={
+                    "totals": gstr1.get("totals", {}),
+                    "warnings": gstr1.get("warnings", []),
+                    "bills_considered": gstr1.get("bills_considered", 0),
+                },
+            ))
+
             session.add_all(rows)
             return True
 

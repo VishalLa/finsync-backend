@@ -51,11 +51,14 @@ def _task_status(task_id: str):
 @_log_call
 def upload_bill():
     direction = request.form.get("direction", "input").lower()
+    run_name = (request.form.get("run_name") or "").strip() or None
     if direction not in {"input", "output"}:
         return jsonify({
             "ok": False, 
             "error": "direction must be input or output"
         }), 400
+    if run_name and len(run_name) > 120:
+        return jsonify({"ok": False, "error": "run_name must be 120 characters or fewer"}), 400
 
     source_path: Optional[str] = None
     raw_data = None
@@ -94,6 +97,7 @@ def upload_bill():
     bill_id = _get_run_bill().create_bill(
         user_id=get_jwt_identity(),
         direction=direction,
+        run_name=run_name,
         source_file=source_path,
         raw_extracted_data=raw_data,
     )
@@ -103,6 +107,7 @@ def upload_bill():
         "ok": True,
         "bill_id": bill_id,
         "task_id": task.id,
+        "run_name": run_name,
         "status_url": f"/api/pipeline/bills/{bill_id}/status",
     }), 202
     
@@ -122,6 +127,7 @@ def list_bills():
         user_id=get_jwt_identity(),
         status=request.args.get("status"),
         direction=direction,
+        run_name=request.args.get("run_name"),
     )), 200
 
 
@@ -238,6 +244,29 @@ def generate_gstr1_report():
         "task_id": task.id,
         "status_url": f"/api/pipeline/tasks/{task.id}",
     }), 202
+
+
+@app.route("/gstr1", methods=["GET"])
+@jwt_required()
+@_log_call
+def get_gstr1_report():
+    period_label = (request.args.get("period_label") or "").strip()
+    if not period_label:
+        return jsonify({
+            "ok": False, 
+            "error": "period_label is required"
+        }), 400
+
+    result = _get_run_bill().get_gstr1(
+        user_id=str(get_jwt_identity()),
+        period_label=period_label,
+    )
+    if result is None:
+        return jsonify({
+            "ok": False,
+            "error": f"No GSTR-1 data found for period {period_label!r}",
+        }), 404
+    return jsonify(result), 200
 
 
 @app.route("/tasks/<task_id>", methods=["GET"])

@@ -17,7 +17,7 @@ Standardized record schema (one dict per ledger row):
     "ledger_type"          : str | None,   # e.g. "Assets", "Liabilities", "Income"
 }
 
-Ledger loading only (CSV / Excel).  Bank statement loading lives in
+Ledger loading (PDF / CSV / Excel). Bank statement loading lives in
 bank_loader.py (format detection in bank_processor.py).
 """
 
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -368,8 +369,8 @@ def load_ledger(
     sheet_name: Optional[str | int] = 0,
 ) -> dict:
     """
-    Parse a user-uploaded ledger file (CSV **or** Excel .xlsx/.xls) into
-    LedgerFormat records.
+    Parse a user-uploaded ledger file (PDF, CSV, or Excel) into LedgerFormat
+    records. PDFs use the entry-point OCR/table extraction pipeline.
 
     Extra fields extracted from CSV or Excel files
     ----------------------------------------
@@ -383,7 +384,7 @@ def load_ledger(
 
     Parameters
     ----------
-    filepath    : path to .csv, .xlsx, or .xls file
+    filepath    : path to .pdf, .csv, .xlsx, or .xls file
     date_format : strptime format string for the date column
     encoding    : text encoding (CSV only; Excel auto-detects)
     column_map  : override alias detection {"csv_col": "schema_field"}
@@ -399,6 +400,23 @@ def load_ledger(
     ext = _file_extension(filepath)
     file_warnings: List[str] = []
     records: List[LedgerFormat] = []
+
+    if ext == ".pdf":
+        from ..ocr.pipeline import extract_document, load_processed_document
+
+        with tempfile.TemporaryDirectory(prefix="ledger-pdf-") as output_dir:
+            document = extract_document(
+                Path(filepath), Path(output_dir), dry_run=True
+            )
+            if document.layout.kind != "ledger":
+                raise ValueError(
+                    f"PDF {Path(filepath).name!r} was classified as "
+                    f"{document.layout.kind!r}, not a ledger."
+                )
+            loaded = load_processed_document(document)
+
+        loaded["source"] = "pdf"
+        return loaded
 
     # ── Branch: Excel ──────────────────────────────────────────────────────
     if ext in (".xlsx", ".xls", ".xlsm"):

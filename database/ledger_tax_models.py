@@ -28,6 +28,7 @@ class BillModel(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
 
     source_file: Mapped[Optional[str]] = mapped_column(String(512))
+    run_name: Mapped[Optional[str]] = mapped_column(String(120))
     invoice_number: Mapped[Optional[str]] = mapped_column(String(128))
     vendor_name: Mapped[Optional[str]] = mapped_column(String(255))
     direction: Mapped[str] = mapped_column(String(16), nullable=False, default="input")  # "input" | "output"

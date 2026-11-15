@@ -65,8 +65,11 @@ def run_reconciliation_pipeline(
     bank_path: str,
     run_name: Optional[str] = None,
     user_id: Optional[str] = None,
+    bank_name: Optional[str] = None,
+    enable_ai_matching: bool = True,
 ) -> Dict[str, Any]:
     run_bank_rec = get_run_bank_rec()
+    print(f"[bank-rec-task] run_id={self.request.id} enable_ai_matching={enable_ai_matching}")
     
     try:
         return run_bank_rec.run_reconciliation_pipeline(
@@ -75,6 +78,8 @@ def run_reconciliation_pipeline(
             bank_path=bank_path,
             run_name=run_name,
             user_id=user_id,
+            bank_name=bank_name,
+            enable_ai_matching=enable_ai_matching,
         )
     except Exception as exc:
         max_retries = self.max_retries if self.max_retries is not None else 3

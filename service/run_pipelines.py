@@ -166,6 +166,8 @@ class RunBankRec:
         date_format: str = "%d-%m-%Y",
         ledger_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
+        bank_name: Optional[str] = None,
+        enable_ai_matching: bool = True,
     ) -> Dict[str, Any]:
         """
         Full pipeline: load files → reconcile → persist → generate report.
@@ -185,6 +187,10 @@ class RunBankRec:
         if ledger_data is None:
             ledger_data = load_ledger(filepath=ledger_path, date_format=date_format)
         bank_data = load_bank_statement(filepath=bank_path)
+        if bank_name:
+            bank_data["bank_name"] = bank_name
+            for record in bank_data.get("records", []):
+                record.bank_name = bank_name
         
         gl_records = ledger_data.get("records", [])
         bank_records = bank_data.get("records", [])
@@ -224,12 +230,16 @@ class RunBankRec:
         
         all_warnings = ledger_data.get("war")
         all_warnings = ledger_data.get("warnings", []) + bank_data.get("warnings", [])
+        print(f"[bank-rec-pipeline] run_id={run_id} enable_ai_matching={enable_ai_matching}")
         result = reconcile(
             config=self.config,
             ledger_result=ledger_data,
             bank_result=bank_data,
             all_warnings=all_warnings,
+            enable_ai_matching=enable_ai_matching,
         )
+        result["ai_matching_enabled"] = enable_ai_matching
+        result.setdefault("summary", {})["ai_matching_enabled"] = enable_ai_matching
         
         all_matches = self._collect_all_matches(result)
         matches_list = self._serialize_for_celery(all_matches)
@@ -315,6 +325,7 @@ class RunBankRec:
         return {
             "status": "success",
             "run_id": run_id,
+            "ai_matching_enabled": enable_ai_matching,
             "summary": safe_result.get("summary", {}),
             "matches_found": len(matches_list),
             "reconciliation_data": safe_result,

@@ -37,6 +37,18 @@ def _allowed(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in {"csv", "xlsx"}
 
 
+def _allowed_ledger(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in {"csv", "xlsx", "pdf"}
+
+
+@app.route("/reconciliation/options", methods=["GET"])
+@jwt_required()
+@_log_call
+def reconciliation_options():
+    """Advertise options supported through the microservice worker chain."""
+    return jsonify({"enable_ai_matching": True}), 200
+
+
 @app.route("/reconciliation", methods=["POST"])
 @jwt_required()
 @_log_call
@@ -44,6 +56,16 @@ def start_reconciliation():
     ledger_file = request.files.get("ledger_file")
     bank_file = request.files.get("bank_file")
     run_name = (request.form.get("run_name") or "").strip() or None
+    bank_name = (request.form.get("bank_name") or "").strip() or None
+    raw_enable_ai = (request.form.get("enable_ai_matching") or "true").strip().lower()
+    if raw_enable_ai not in {"true", "false", "1", "0", "yes", "no"}:
+        return jsonify({
+            "ok": False,
+            "error": "enable_ai_matching must be a boolean"
+        }), 400
+
+    enable_ai_matching = raw_enable_ai in {"true", "1", "yes"}
+    print(f"[bank-rec-api] enable_ai_matching={enable_ai_matching}")
     
     if not ledger_file or not bank_file or not ledger_file.filename or not bank_file.filename:
         return jsonify({
@@ -51,11 +73,14 @@ def start_reconciliation():
             "error": "ledger_file and bank_file are required"
         }), 400
         
-    if not _allowed(ledger_file.filename) or not _allowed(bank_file.filename):
+    if not _allowed_ledger(ledger_file.filename) or not _allowed(bank_file.filename):
         return jsonify({
             "ok": False, 
-            "error": "Only CSV and XLSX files are supported"
+            "error": "Ledger files must be CSV, XLSX, or PDF; bank statements must be CSV or XLSX"
         }), 400
+
+    if bank_name and len(bank_name) > 128:
+        return jsonify({"ok": False, "error": "bank_name must be 128 characters or fewer"}), 400
 
     run_id = uuid.uuid4().hex
     user_id = str(get_jwt_identity())
@@ -68,7 +93,11 @@ def start_reconciliation():
         user_id=user_id,
         ledger_ref=ledger_ref,
         bank_ref=bank_ref,
-        options={"run_name": run_name},
+        options={
+            "run_name": run_name,
+            "bank_name": bank_name,
+            "enable_ai_matching": enable_ai_matching,
+        },
     )
     
     try:
@@ -108,6 +137,8 @@ def start_reconciliation():
         "run_id": run_id,
         "task_id": run_id,
         "run_name": run_name,
+        "bank_name": bank_name,
+        "enable_ai_matching": enable_ai_matching,
         "status_url": f"/api/bank-rec/reconciliation/{run_id}/status",
     }), 202
 

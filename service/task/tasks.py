@@ -211,7 +211,10 @@ def persist_inputs(self, payload: dict) -> dict[str, str]:
             bank_ref=message.bank_ref,
             bank_name=metadata.get("bank_name") or "UNKNOWN",
             template_version=metadata.get("template_version") or "v1",
-            options={"warnings": metadata.get("warnings", [])},
+            options={
+                "warnings": metadata.get("warnings", []),
+                "enable_ai_matching": metadata.get("enable_ai_matching", True),
+            },
         )
         
         celery_app.send_task(T_MATCHER_RUN, args=[matcher_message.to_dict()])

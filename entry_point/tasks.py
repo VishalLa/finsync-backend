@@ -54,6 +54,7 @@ def process_run(self, payload: Dict[str, Any]) -> Dict[str, str]:
                 message.run_id,
                 message.user_id,
                 message.bank_ref,
+                message.options.get("bank_name"),
             ),
         )
 
@@ -120,9 +121,14 @@ def extract_bank(
     run_id: str,
     user_id: str,
     bank_ref: str,
+    bank_name: str | None = None,
 ) -> Dict[str, Any]:
     try:
         bank_data = load_bank_statement(filepath=str(resolve(bank_ref)))
+        if bank_name:
+            bank_data["bank_name"] = bank_name
+            for record in bank_data.get("records", []):
+                record.bank_name = bank_name
         normalized_ref = run_ref(run_id, "norm", "bank.json")
         records: List[Any] = bank_data.get("records", [])
         write_json(
@@ -178,7 +184,8 @@ def persist_extracted_inputs(
             {
                 "run_name": message.options.get("run_name"),
                 "ledger_source": ledger_result.get("source"),
-                "bank_name": bank_result.get("bank_name"),
+                "bank_name": bank_result.get("bank_name") or message.options.get("bank_name"),
+                "enable_ai_matching": message.options.get("enable_ai_matching", True),
                 "template_version": bank_result.get("template_version"),
                 "warnings": ledger_result.get("warnings", [])
                 + bank_result.get("warnings", []),

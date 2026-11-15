@@ -43,6 +43,13 @@ def run_matcher(self, payload: dict) -> dict[str, str]:
         warnings = message.options.get("warnings", [])
         if not isinstance(warnings, list):
             raise ValueError("matching warnings must be a list")
+        enable_ai_matching = message.options.get("enable_ai_matching", True)
+        if not isinstance(enable_ai_matching, bool):
+            raise ValueError("enable_ai_matching must be a boolean")
+        print(
+            f"[matcher-task] run_id={message.run_id} "
+            f"enable_ai_matching={enable_ai_matching}"
+        )
 
         result = reconcile(
             config=get_settings(),
@@ -54,7 +61,10 @@ def run_matcher(self, payload: dict) -> dict[str, str]:
                 "warnings": [],
             },
             all_warnings=list(warnings),
+            enable_ai_matching=enable_ai_matching,
         )
+        result["ai_matching_enabled"] = enable_ai_matching
+        result.setdefault("summary", {})["ai_matching_enabled"] = enable_ai_matching
 
         result_ref = run_ref(message.run_id, "results", "matcher_result.json")
         write_json(result_ref, result)

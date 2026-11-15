@@ -69,6 +69,7 @@ def run_reconciliation_pipeline(
     enable_ai_matching: bool = True,
 ) -> Dict[str, Any]:
     run_bank_rec = get_run_bank_rec()
+    print(f"[bank-rec-task] run_id={self.request.id} enable_ai_matching={enable_ai_matching}")
     
     try:
         return run_bank_rec.run_reconciliation_pipeline(

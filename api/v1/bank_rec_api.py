@@ -41,6 +41,14 @@ def _allowed(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in {"csv", "xlsx", "pdf"}
 
 
+@app.route("/reconciliation/options", methods=["GET"])
+@jwt_required()
+@_log_call
+def reconciliation_options():
+    """Advertise options supported end-to-end by the API and worker pipeline."""
+    return jsonify({"enable_ai_matching": True}), 200
+
+
 @app.route("/reconciliation", methods=["POST"])
 @jwt_required()
 @_log_call
@@ -58,6 +66,7 @@ def start_reconciliation():
         }), 400
 
     enable_ai_matching = raw_enable_ai in {"true", "1", "yes"}
+    print(f"[bank-rec-api] enable_ai_matching={enable_ai_matching}")
 
     if not ledger_file or not bank_file or not ledger_file.filename or not bank_file.filename:
         return jsonify({

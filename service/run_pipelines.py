@@ -231,6 +231,7 @@ class RunBankRec:
         
         all_warnings = ledger_data.get("war")
         all_warnings = ledger_data.get("warnings", []) + bank_data.get("warnings", [])
+        print(f"[bank-rec-pipeline] run_id={run_id} enable_ai_matching={enable_ai_matching}")
         result = reconcile(
             config=self.config,
             ledger_result=ledger_data,
@@ -238,6 +239,8 @@ class RunBankRec:
             all_warnings=all_warnings,
             enable_ai_matching=enable_ai_matching,
         )
+        result["ai_matching_enabled"] = enable_ai_matching
+        result.setdefault("summary", {})["ai_matching_enabled"] = enable_ai_matching
         
         all_matches = self._collect_all_matches(result)
         matches_list = self._serialize_for_celery(all_matches)
@@ -323,6 +326,7 @@ class RunBankRec:
         return {
             "status": "success",
             "run_id": run_id,
+            "ai_matching_enabled": enable_ai_matching,
             "summary": safe_result.get("summary", {}),
             "matches_found": len(matches_list),
             "reconciliation_data": safe_result,

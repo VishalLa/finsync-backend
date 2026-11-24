@@ -7,7 +7,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 
 from schema import BankStatement, LedgerFormat, AIWindowOutput, AIManyToOneOutput
-from shared.settings import Settings
+from app.shared.settings import Settings
 from ..base import Matcher
 from .ai_utils import (
     get_shared_llm,

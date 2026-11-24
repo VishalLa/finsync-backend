@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY entry_point/requirements.txt .
 RUN pip install -r requirements.txt
-COPY shared/ shared/
+COPY app/shared/ app/shared/
 COPY schema/ schema/
 COPY entry_point/ entry_point/
 

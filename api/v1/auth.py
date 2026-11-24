@@ -15,8 +15,8 @@ from flask_jwt_extended import (
 from service.email_service import EmailService
 from service.client import ServiceClient
 
-from shared.logging_utils import log_call as _log_call
-from shared.validation import is_valid_email
+from app.shared.logging_utils import log_call as _log_call
+from app.shared.validation import is_valid_email
 
 app = Blueprint("auth", __name__)
 

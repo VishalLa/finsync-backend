@@ -15,7 +15,7 @@ The FinSync backend is a Flask API for bank reconciliation, bill processing, led
 | `ledger/` | Journal, general-ledger, TDS, and GSTR-1 domain logic |
 | `database/` | SQLAlchemy models, database manager, and authentication models |
 | `schema/` | Domain data structures used by the pipelines |
-| `shared/` | Queue messages, light settings, storage, and Celery factory |
+| `app/shared/` | Queue messages, light settings, storage, and Celery factory |
 
 The matcher and ledger packages have their own implementation notes: [matcher/README.md](matcher/README.md) and [ledger/README.md](ledger/README.md).
 

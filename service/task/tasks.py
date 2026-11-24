@@ -12,8 +12,8 @@ from flask_jwt_extended import JWTManager
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.exc import NoInspectionAvailable
 
-from shared.failure import reject_message, retry_stage
-from shared.message import (
+from app.shared.failure import reject_message, retry_stage
+from app.shared.message import (
     BadMessage,
     DBMarkFailedMsg,
     DBPersistInputsMsg,
@@ -26,9 +26,9 @@ from shared.message import (
     T_SERVICE_SAVE,
     ServiceSaveMsg,
 )
-from shared.settings import get_settings
-from shared.status import set_status
-from shared.storage import read_json, resolve
+from app.shared.settings import get_settings
+from app.shared.status import set_status
+from app.shared.storage import read_json, resolve
 
 from ..celery_app import celery_app
 
@@ -370,7 +370,7 @@ def save_results(self, payload: dict) -> dict[str, str]:
             raise ValueError("normalized ledger and bank data must be lists")
         
         from schema import BankStatement, LedgerFormat
-        from shared.bank_recon_xlsx import write_bank_recon_xlsx
+        from app.shared.bank_recon_xlsx import write_bank_recon_xlsx
         from pathlib import Path
 
         report_path = Path(get_settings().STORAGE_DIR) / f"bank-recon-{message.run_id}.xlsx"

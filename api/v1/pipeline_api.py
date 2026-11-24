@@ -11,7 +11,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
 from service.client import ServiceClient, celery_app, enqueue_task
-from shared.logging_utils import log_call as _log_call
+from app.shared.logging_utils import log_call as _log_call
 
 
 app = Blueprint("pipeline_api", __name__)

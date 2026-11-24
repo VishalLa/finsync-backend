@@ -5,16 +5,16 @@ from typing import Any, Dict, List
 from celery import chord, group
 from entry_point import load_bank_statement, load_ledger
 
-from shared.failure import reject_message, retry_stage
-from shared.message import (
+from app.shared.failure import reject_message, retry_stage
+from app.shared.message import (
     BadMessage,
     DBPersistInputsMsg,
     EntryProcessMsg,
     T_DB_STORE_INPUTS,
     T_ENTRY_PROCESS,
 )
-from shared.status import set_status
-from shared.storage import resolve, run_ref, write_json
+from app.shared.status import set_status
+from app.shared.storage import resolve, run_ref, write_json
 
 from .celery_app import celery_app
 

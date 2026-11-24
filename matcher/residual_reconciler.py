@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
-from shared.settings import Settings
+from app.shared.settings import Settings
 from schema import BankStatement, LedgerFormat, DraftAccountSuggestion
 from .base import Matcher
 

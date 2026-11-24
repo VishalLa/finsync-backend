@@ -10,10 +10,10 @@ from werkzeug.utils import secure_filename
 
 from service.client import ServiceClient, enqueue_task
 
-from shared.logging_utils import log_call as _log_call
-from shared.message import EntryProcessMsg, T_ENTRY_PROCESS
-from shared.status import get_status, set_status
-from shared.storage import resolve, run_ref, save_stream
+from app.shared.logging_utils import log_call as _log_call
+from app.shared.message import EntryProcessMsg, T_ENTRY_PROCESS
+from app.shared.status import get_status, set_status
+from app.shared.storage import resolve, run_ref, save_stream
 
 
 app = Blueprint("bank_rec_api", __name__)

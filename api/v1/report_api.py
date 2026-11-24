@@ -8,7 +8,7 @@ from flask import Blueprint, jsonify, request, send_file
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from service.client import celery_app, enqueue_task
-from shared.logging_utils import log_call as _log_call
+from app.shared.logging_utils import log_call as _log_call
 
 
 app = Blueprint("reports", __name__)

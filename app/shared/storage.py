@@ -13,7 +13,7 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Any
 
-from shared.settings import get_settings
+from app.shared.settings import get_settings
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 

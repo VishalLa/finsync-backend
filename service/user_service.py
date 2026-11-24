@@ -16,7 +16,7 @@ from core.security import verify_token
 
 from .helper import _log_db_errors
 from ._base import Base
-from shared.validation import is_valid_email
+from app.shared.validation import is_valid_email
 # from .run_result_service_bank_rec import ResultBankRec
 
 

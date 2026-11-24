@@ -4,7 +4,7 @@ This document describes the matcher package as implemented. `LedgerFormat`,
 `BankStatement`, `Settings`, `MatchedPair`, `SameSideDetection`,
 `IgnoredMetadataRecord`, `AuditInvestigationItem`, and
 `DraftAccountSuggestion` are schema/configuration types imported from the
-`schema` and `shared` packages; their definitions live outside `matcher`.
+`schema` and `app.shared` packages; their definitions live outside `matcher`.
 Amounts are currency units (not paise) at the API boundary. Matching helpers
 convert to integer paise where exact currency comparisons are required.
 

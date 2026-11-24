@@ -20,7 +20,7 @@ def _default_storage_dir() -> str:
         return os.environ["BILL_UPLOAD_FOLDER"]
     if _is_container_runtime():
         return "/data/uploads"
-    return str(Path(__file__).resolve().parents[1] / "storage")
+    return str(Path(__file__).resolve().parents[2] / "storage")
 
 
 def _default_ollama_url() -> str:

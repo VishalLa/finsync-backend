@@ -14,7 +14,7 @@ import sys
 
 assert not {"SECRET_KEY", "JWT_SECRET_KEY", "DATABASE_URL"} & os.environ.keys()
 
-import shared.storage
+import app.shared.storage
 
 assert "pandas" not in sys.modules
 assert "core.config" not in sys.modules
@@ -24,8 +24,8 @@ from core.config import Config
 from matcher import reconcile
 import matcher
 from schema import BankStatement, LedgerFormat
-from shared.celery_factory import create_celery
-from shared.settings import Settings, get_settings
+from app.shared.celery_factory import create_celery
+from app.shared.settings import Settings, get_settings
 
 settings = get_settings()
 assert issubclass(Config, Settings)
@@ -102,7 +102,7 @@ def test_residual_drafting_uses_supplied_settings(
 ) -> None:
     from Backend.matcher import residual_reconciler
     from schema import BankStatement
-    from shared.settings import Settings
+    from app.shared.settings import Settings
 
     supplied_config = Settings(
         REDIS_URL="redis://127.0.0.1:6379/0",

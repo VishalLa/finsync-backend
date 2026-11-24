@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, List
 
-from shared.message import EntryProcessMsg
+from app.shared.message import EntryProcessMsg
 
 
 def test_process_run_dispatches_bank_and_ledger_as_parallel_tasks(

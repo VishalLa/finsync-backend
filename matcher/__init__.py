@@ -9,7 +9,7 @@ from .same_side_detect import detect_same_side
 from .memory_match import MatchMemory, MemoryMatcher
 from .residual_reconciler import ResidualReconciler
 
-from shared.settings import Settings
+from app.shared.settings import Settings
 
 from langchain_ollama import ChatOllama
 

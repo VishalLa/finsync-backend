@@ -3,17 +3,17 @@ from __future__ import annotations
 from matcher import reconcile
 from schema import BankStatement, LedgerFormat
 
-from shared.failure import reject_message, retry_stage
-from shared.message import (
+from app.shared.failure import reject_message, retry_stage
+from app.shared.message import (
     BadMessage,
     MatcherRunMsg,
     ServiceSaveMsg,
     T_MATCHER_RUN,
     T_SERVICE_SAVE,
 )
-from shared.settings import get_settings
-from shared.status import set_status
-from shared.storage import read_json, run_ref, write_json
+from app.shared.settings import get_settings
+from app.shared.status import set_status
+from app.shared.storage import read_json, run_ref, write_json
 
 from .celery_app import celery_app
 

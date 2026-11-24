@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from langchain_ollama import ChatOllama
 
-from shared.settings import Settings
+from app.shared.settings import Settings
 from schema import BankStatement, LedgerFormat
 
 from .fuzzy_matcher.business_calendar import BusinessCalendar

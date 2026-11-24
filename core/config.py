@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict  # type: ignore
 from dotenv import load_dotenv
 
-from shared.settings import Settings
+from app.shared.settings import Settings
 
 load_dotenv()
 

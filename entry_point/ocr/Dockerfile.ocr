@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY req.txt .
 RUN pip install -r req.txt
-COPY shared/ shared/
+COPY app/shared/ app/shared/
 COPY schema/ schema/
 COPY entry_point/ entry_point/
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from shared.settings import Settings
+from app.shared.settings import Settings
 
 
 class APISettings(Settings):

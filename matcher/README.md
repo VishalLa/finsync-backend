@@ -368,7 +368,7 @@ operates on a wider, less-certain search space by design.
 ```python
 from matcher import reconcile, MatchMemory
 from matcher.memory_match import JSONFileBackend  # or your own backend
-from shared.settings import get_settings
+from app.shared.settings import get_settings
 
 config = get_settings()
 warnings = []

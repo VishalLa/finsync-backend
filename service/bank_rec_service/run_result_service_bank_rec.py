@@ -22,13 +22,13 @@ from database import (
     AuditInvestigationItemModel,
     JournalEntryModel,
 )
-from shared.settings import _default_storage_dir
+from app.shared.settings import _default_storage_dir
 from schema import (
     LedgerFormat as SchemaLedger,
     BankStatement as SchemaBank
 )
 from .._base import Base
-from shared.bank_recon_xlsx import write_bank_recon_xlsx
+from app.shared.bank_recon_xlsx import write_bank_recon_xlsx
 from ..helper import _log_db_errors
 
 logger = logging.getLogger(__name__)

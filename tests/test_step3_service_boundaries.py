@@ -53,7 +53,7 @@ assert not loaded, loaded
 
 
 def test_db_mark_failed_message_preserves_schema_version() -> None:
-    from shared.message import DBMarkFailedMsg, SCHEMA_VERSION, T_DB_MARK_FAILED
+    from app.shared.message import DBMarkFailedMsg, SCHEMA_VERSION, T_DB_MARK_FAILED
 
     message = DBMarkFailedMsg(
         run_id="run-1",
@@ -70,7 +70,7 @@ def test_fail_stage_records_storage_status_and_sends_db_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from shared import failure
-    from shared.message import DBMarkFailedMsg, T_DB_MARK_FAILED
+    from app.shared.message import DBMarkFailedMsg, T_DB_MARK_FAILED
 
     calls = []
 
@@ -129,7 +129,7 @@ def test_db_mark_failed_task_repeats_mark_status_idempotently(
     monkeypatch.setenv("STORAGE_DIR", str(tmp_path / "storage"))
     monkeypatch.setenv("OLLAMA_URL", "http://127.0.0.1:11434")
     from service.task import tasks as db_tasks
-    from shared.message import DBMarkFailedMsg
+    from app.shared.message import DBMarkFailedMsg
 
     updates = []
 

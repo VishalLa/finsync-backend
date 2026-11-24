@@ -6,8 +6,8 @@ from typing import Any
 
 from celery.exceptions import TimeoutError as CeleryTimeoutError
 
-from shared.celery_factory import create_celery
-from shared.settings import get_settings
+from app.shared.celery_factory import create_celery
+from app.shared.settings import get_settings
 
 celery_app = create_celery(name="api-service-client")
 _SERVICE_CALL_TIMEOUT = 60

@@ -17,7 +17,7 @@ from api.v1 import (
     report_app,
 )
 
-from shared.api_settings import APISettings
+from app.shared.api_settings import APISettings
 
 logger = logging.getLogger(__name__)
 

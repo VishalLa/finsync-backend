@@ -18,6 +18,7 @@ from api.v1 import (
 )
 
 from core.config import Config
+from .rate_limit import init_rate_limiting, limiter
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,17 @@ def _configure_cors(app: Flask, debug: bool) -> None:
             "use an explicit origin list in production"
         )
 
-    CORS(app, origins=allowed_origins, max_age=600)
+    CORS(
+        app,
+        origins=allowed_origins,
+        max_age=600,
+        expose_headers=[
+            "Retry-After",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+        ],
+    )
 
 
 def _register_error_handlers(app: Flask) -> None:
@@ -101,13 +112,16 @@ def create_app() -> Flask:
 
     _configure_cors(app, config.DEBUG)
     _register_error_handlers(app)
+    init_rate_limiting(app)
 
     # Health endpoints (used by Docker healthcheck / load balancers)
     @app.get("/")
+    @limiter.exempt
     def root():
         return {"status": "running"}, 200
 
     @app.get("/healthz")
+    @limiter.exempt
     def healthz():
         return {"status": "ok"}, 200
 

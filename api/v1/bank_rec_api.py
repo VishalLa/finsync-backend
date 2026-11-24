@@ -14,6 +14,8 @@ from core.config import Config
 from service import ResultBankRec, RunBankRec, RecJournalPosting, _log_call
 from tasks.bank_rec import run_reconciliation_pipeline
 from tasks.generate_report_tasks import generate_report_bank_rec
+from app import run_quota
+from app.rate_limit import rate_limit
 
 
 app = Blueprint("bank_rec_api", __name__)
@@ -42,6 +44,7 @@ def _allowed(filename: str) -> bool:
 
 
 @app.route("/reconciliation/options", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def reconciliation_options():
@@ -50,6 +53,7 @@ def reconciliation_options():
 
 
 @app.route("/reconciliation", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def start_reconciliation():
@@ -86,25 +90,42 @@ def start_reconciliation():
     if bank_name and len(bank_name) > 128:
         return jsonify({"ok": False, "error": "bank_name must be 128 characters or fewer"}), 400
 
-    config = Config.from_env()
-    run_token = uuid.uuid4().hex[:12]
-    
-    ledger_path = os.path.join(
-        config.STORAGE_DIR, 
-        f"{run_token}_{secure_filename(ledger_file.filename)}"
-    )
-    bank_path = os.path.join(
-        config.STORAGE_DIR, 
-        f"{run_token}_{secure_filename(bank_file.filename)}"
-    )
-    
-    ledger_file.save(ledger_path)
-    bank_file.save(bank_path)
+    user_id = str(get_jwt_identity())
+    run_id = uuid.uuid4().hex
+    # TODO(phase-2): release this quota when the run reaches a terminal state.
+    if not run_quota.acquire(user_id, run_id):
+        return jsonify({
+            "ok": False,
+            "error": "Too many active reconciliations. Wait for one to finish and try again.",
+        }), 429
 
-    task = run_reconciliation_pipeline.apply_async(
-        args=[ledger_path, bank_path, run_name, str(get_jwt_identity())],
-        kwargs={"bank_name": bank_name, "enable_ai_matching": enable_ai_matching},
-    )
+    ledger_path = None
+    bank_path = None
+    try:
+        config = Config.from_env()
+        run_token = uuid.uuid4().hex[:12]
+        ledger_path = os.path.join(
+            config.STORAGE_DIR,
+            f"{run_token}_{secure_filename(ledger_file.filename)}",
+        )
+        bank_path = os.path.join(
+            config.STORAGE_DIR,
+            f"{run_token}_{secure_filename(bank_file.filename)}",
+        )
+        ledger_file.save(ledger_path)
+        bank_file.save(bank_path)
+
+        task = run_reconciliation_pipeline.apply_async(
+            args=[ledger_path, bank_path, run_name, user_id],
+            kwargs={"bank_name": bank_name, "enable_ai_matching": enable_ai_matching},
+            task_id=run_id,
+        )
+    except Exception:
+        run_quota.release(user_id, run_id)
+        for path in (ledger_path, bank_path):
+            if path and os.path.exists(path):
+                os.remove(path)
+        raise
     return jsonify({
         "ok": True,
         "run_id": task.id,
@@ -117,6 +138,7 @@ def start_reconciliation():
 
 
 @app.route("/reconciliation/<run_id>/status", methods=["GET"])
+@rate_limit("poll")
 @jwt_required()
 @_log_call
 def run_status(run_id: str):
@@ -132,6 +154,7 @@ def run_status(run_id: str):
 
 
 @app.route("/reconciliation/<run_id>", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def run_result(run_id: str):
@@ -151,6 +174,7 @@ def run_result(run_id: str):
 
 
 @app.route("/reconciliation/<run_id>/report", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_report(run_id: str):
@@ -167,6 +191,7 @@ def generate_report(run_id: str):
 
 
 @app.route("/reconciliation/<run_id>/journal-entries/approve", methods=["POST"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def approve_journal_entries(run_id: str):
@@ -198,6 +223,7 @@ def approve_journal_entries(run_id: str):
 
 
 @app.route("/previous/runs/<user_id>", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def get_previous_runs(user_id: str):
@@ -237,6 +263,7 @@ def get_previous_runs(user_id: str):
 
 
 @app.route("/previous/runs/<user_id>/<run_id>", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def get_previous_run(user_id: str, run_id: str):
@@ -270,6 +297,7 @@ def get_previous_run(user_id: str, run_id: str):
 
 
 @app.route("/previous/runs/<user_id>/<run_id>", methods=["DELETE"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def delete_previous_run(user_id: str, run_id: str):

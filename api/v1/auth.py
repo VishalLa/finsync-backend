@@ -13,6 +13,7 @@ from flask_jwt_extended import (
 )
 
 from service import EmailService, UserService, _log_call
+from app.rate_limit import fail_closed, rate_limit
 
 app = Blueprint("auth", __name__)
 
@@ -49,6 +50,8 @@ def role_required(role: str):
 
 
 @app.route('/register', methods=['POST'])
+@fail_closed
+@rate_limit("auth")
 @_log_call
 def register_user():
     data = request.json or {}
@@ -88,6 +91,8 @@ def register_user():
 
 
 @app.route("/login", methods=["POST"])
+@fail_closed
+@rate_limit("auth")
 @_log_call
 def login_user():
     data = request.get_json(silent=True) or {}
@@ -125,6 +130,8 @@ def login_user():
 
 
 @app.route("/verify-email", methods=["GET"])
+@fail_closed
+@rate_limit("auth")
 @_log_call
 def verify_email():
     token = request.args.get("token")
@@ -139,6 +146,7 @@ def verify_email():
 
 
 @app.route("/logout", methods=["POST"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def logout_user():
@@ -155,6 +163,7 @@ def logout_user():
 
 
 @app.route("/me", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def current_user():
@@ -172,6 +181,7 @@ def current_user():
 
 
 @app.route("/delete", methods=["DELETE"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def delete_user():

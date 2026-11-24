@@ -13,6 +13,7 @@ dependencies = [
     "flask-caching==2.4.0",
     "flask-cors==6.0.5",
     "flask-jwt-extended==4.7.4",
+    "Flask-Limiter[redis]>=3.8",
     "itsdangerous==2.2.0",
     "langchain-core==1.4.8",
     "langchain-ollama==1.1.0",

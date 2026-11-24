@@ -89,6 +89,26 @@ Access tokens are valid for 12 hours. Generated reports are stored under `STORAG
 On startup, the backend adds the `email_verified` column to an older `user` table if needed. Existing accounts are marked verified so this schema upgrade does not lock them out.
 Ledger IDs are unique within a reconciliation run, rather than across the entire database. On startup, the backend migrates the older global `ledger_id` constraint for PostgreSQL and SQLite databases.
 
+## Rate limiting and active reconciliation quota
+
+The API uses Flask-Limiter's sliding-window counter. A global per-IP limit applies to API routes; `/` and `/healthz` are exempt. Authenticated tiers key requests by JWT identity, falling back to the client IP when the token is absent or invalid.
+
+| Tier | Default | Identity | Typical routes |
+| --- | --- | --- | --- |
+| Default | 200 per minute | Client IP | All routes except health endpoints |
+| Auth | 5 per minute | Client IP | Registration, login, and email verification |
+| Heavy | 10 per hour | JWT identity or IP fallback | Reconciliation and bill submissions, report generation, and account deletion |
+| Normal | 60 per minute | JWT identity or IP fallback | Ordinary reads and actions |
+| Poll | 120 per minute | JWT identity or IP fallback | Run, bill, and report status checks |
+
+Set the `RATELIMIT_*` variables to change these defaults. The limiter uses the Redis URL from `REDIS_URL` with a separate database index by default; `RATELIMIT_REDIS_URL` can override the URL and `RATELIMIT_REDIS_DB` can select the index. The limiter never logs the Redis URL.
+
+Normal routes fail open if Redis is unavailable. Registration, login, and email verification fail closed with a JSON service-unavailable response and a retry hint. Rate-limit responses use the API's JSON error format and include `Retry-After` and `X-RateLimit-*` headers, which are exposed through CORS when enabled.
+
+The API also caps each user's concurrent active reconciliation submissions. Redis-backed quota checks fail open when Redis is unavailable. A quota reservation is released when submission fails; release at run completion, failure, and deletion remains a follow-up.
+
+See [`.env.example`](.env.example) for the rate-limit and quota variables.
+
 For Docker Compose, use container hostnames in `.env`:
 
 ```dotenv

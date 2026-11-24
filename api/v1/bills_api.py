@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from service import RunBill, _log_call
+from app.rate_limit import rate_limit
 
 
 app = Blueprint("bills_api", __name__)
@@ -21,6 +22,7 @@ def _get_run_bill() -> RunBill:
 
 
 @app.route("", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def list_bills():

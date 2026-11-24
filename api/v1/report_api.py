@@ -16,6 +16,7 @@ from tasks.generate_report_tasks import (
 )
 from app.celery import celery_app
 from service import _log_call
+from app.rate_limit import rate_limit
 
 
 app = Blueprint("reports", __name__)
@@ -32,6 +33,7 @@ def _enqueue(task, **kwargs):
 
 
 @app.route("/reports/tasks/<task_id>", methods=["GET"])
+@rate_limit("poll")
 @jwt_required()
 @_log_call
 def report_task_status(task_id: str):
@@ -52,6 +54,7 @@ def report_task_status(task_id: str):
 
 
 @app.route("/reports/tasks/<task_id>/download", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def download_report_task(task_id: str):
@@ -93,6 +96,7 @@ def download_report_task(task_id: str):
 
 
 @app.route("/reports/bank-reconciliation", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_bank_reconciliation_report():
@@ -112,6 +116,7 @@ def generate_bank_reconciliation_report():
 
 
 @app.route("/reports/gstr1", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_gstr1_report():
@@ -131,6 +136,7 @@ def generate_gstr1_report():
 
 
 @app.route("/reports/journal", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_journal_report():
@@ -159,6 +165,7 @@ def generate_journal_report():
 
 
 @app.route("/reports/ledger", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_ledger_report():
@@ -179,6 +186,7 @@ def generate_ledger_report():
 
 
 @app.route("/reports/tds", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_tds_report():

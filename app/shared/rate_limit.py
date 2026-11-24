@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from functools import lru_cache, wraps
-from typing import Callable, Optional, TypeVar
+from functools import wraps
+from typing import Callable, TypeVar
 from urllib.parse import urlparse, urlunparse
 
 from flask import Flask, g, jsonify

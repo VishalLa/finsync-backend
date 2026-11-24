@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app.shared.logging_utils import log_call as _log_call
+from app.shared.rate_limit import rate_limit
 from service.client import ServiceClient
 
 
@@ -22,6 +23,7 @@ def _get_run_bill() -> ServiceClient:
 
 
 @app.route("", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def list_bills():

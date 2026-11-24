@@ -12,6 +12,8 @@ from service.client import ServiceClient, enqueue_task
 
 from app.shared.logging_utils import log_call as _log_call
 from app.shared.message import EntryProcessMsg, T_ENTRY_PROCESS
+from app.shared.rate_limit import rate_limit
+from app.shared import run_quota
 from app.shared.status import get_status, set_status
 from app.shared.storage import resolve, run_ref, save_stream
 
@@ -42,6 +44,7 @@ def _allowed_ledger(filename: str) -> bool:
 
 
 @app.route("/reconciliation/options", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def reconciliation_options():
@@ -50,6 +53,7 @@ def reconciliation_options():
 
 
 @app.route("/reconciliation", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def start_reconciliation():
@@ -84,6 +88,12 @@ def start_reconciliation():
 
     run_id = uuid.uuid4().hex
     user_id = str(get_jwt_identity())
+    # TODO(phase-2): release this quota when the run reaches a terminal state.
+    if not run_quota.acquire(user_id, run_id):
+        return jsonify({
+            "ok": False,
+            "error": "Too many active reconciliations. Wait for one to finish and try again.",
+        }), 429
     ledger_extension = Path(secure_filename(ledger_file.filename)).suffix.lower()
     bank_extension = Path(secure_filename(bank_file.filename)).suffix.lower()
     ledger_ref = run_ref(run_id, "raw", f"ledger{ledger_extension}")
@@ -121,6 +131,7 @@ def start_reconciliation():
             task_id=run_id,
         )
     except Exception:
+        run_quota.release(user_id, run_id)
         resolve(ledger_ref).unlink(missing_ok=True)
         resolve(bank_ref).unlink(missing_ok=True)
         set_status(
@@ -144,6 +155,7 @@ def start_reconciliation():
 
 
 @app.route("/reconciliation/<run_id>/status", methods=["GET"])
+@rate_limit("poll")
 @jwt_required()
 @_log_call
 def run_status(run_id: str):
@@ -215,6 +227,7 @@ def run_status(run_id: str):
 
 
 @app.route("/reconciliation/<run_id>", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def run_result(run_id: str):
@@ -234,6 +247,7 @@ def run_result(run_id: str):
 
 
 @app.route("/reconciliation/<run_id>/report", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_report(run_id: str):
@@ -250,6 +264,7 @@ def generate_report(run_id: str):
 
 
 @app.route("/reconciliation/<run_id>/journal-entries/approve", methods=["POST"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def approve_journal_entries(run_id: str):
@@ -281,6 +296,7 @@ def approve_journal_entries(run_id: str):
 
 
 @app.route("/previous/runs/<user_id>", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def get_previous_runs(user_id: str):
@@ -320,6 +336,7 @@ def get_previous_runs(user_id: str):
 
 
 @app.route("/previous/runs/<user_id>/<run_id>", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def get_previous_run(user_id: str, run_id: str):
@@ -353,6 +370,7 @@ def get_previous_run(user_id: str, run_id: str):
 
 
 @app.route("/previous/runs/<user_id>/<run_id>", methods=["DELETE"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def delete_previous_run(user_id: str, run_id: str):

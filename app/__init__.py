@@ -1,23 +1,13 @@
+from __future__ import annotations
+
 import logging
 import os
-from datetime import timedelta
+from typing import TYPE_CHECKING
 
-from flask import Flask, jsonify
-from flask_cors import CORS
-from flask_jwt_extended import JWTManager
-from werkzeug.exceptions import HTTPException
-from werkzeug.middleware.proxy_fix import ProxyFix
+if TYPE_CHECKING:
+    from flask import Flask
+    from app.shared.settings import APISettings
 
-from api.v1 import (
-    auth_app,
-    bank_rec_app,
-    bills_app,
-    ledger_app,
-    pipeline_app,
-    report_app,
-)
-
-from app.shared.api_settings import APISettings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +36,8 @@ def _validate_secrets(config: APISettings) -> None:
 
 
 def _configure_cors(app: Flask, debug: bool) -> None:
+    from flask_cors import CORS
+
     configured_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
     if not configured_origins:
         return  # CORS stays disabled: same-origin requests only
@@ -65,10 +57,23 @@ def _configure_cors(app: Flask, debug: bool) -> None:
             "use an explicit origin list in production"
         )
 
-    CORS(app, origins=allowed_origins, max_age=600)
+    CORS(
+        app,
+        origins=allowed_origins,
+        max_age=600,
+        expose_headers=[
+            "Retry-After",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+        ],
+    )
 
 
 def _register_error_handlers(app: Flask) -> None:
+    from flask import jsonify
+    from werkzeug.exceptions import HTTPException
+
     @app.errorhandler(HTTPException)
     def handle_http_error(error: HTTPException):
         return jsonify(error=error.name, message=error.description), error.code
@@ -81,6 +86,23 @@ def _register_error_handlers(app: Flask) -> None:
 
 
 def create_app() -> Flask:
+    from datetime import timedelta
+
+    from flask import Flask
+    from flask_jwt_extended import JWTManager
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    from api.v1 import (
+        auth_app,
+        bank_rec_app,
+        bills_app,
+        ledger_app,
+        pipeline_app,
+        report_app,
+    )
+    from app.shared.settings import APISettings
+    from app.shared.rate_limit import init_rate_limiting, limiter
+
     config = APISettings.from_env()
     _configure_logging(config.DEBUG)
     _validate_secrets(config)
@@ -101,13 +123,16 @@ def create_app() -> Flask:
 
     _configure_cors(app, config.DEBUG)
     _register_error_handlers(app)
+    init_rate_limiting(app)
 
     # Health endpoints (used by Docker healthcheck / load balancers)
     @app.get("/")
+    @limiter.exempt
     def root():
         return {"status": "running"}, 200
 
     @app.get("/healthz")
+    @limiter.exempt
     def healthz():
         return {"status": "ok"}, 200
 

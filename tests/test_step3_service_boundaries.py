@@ -69,7 +69,7 @@ def test_db_mark_failed_message_preserves_schema_version() -> None:
 def test_fail_stage_records_storage_status_and_sends_db_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from shared import failure
+    from app.shared import failure
     from app.shared.message import DBMarkFailedMsg, T_DB_MARK_FAILED
 
     calls = []

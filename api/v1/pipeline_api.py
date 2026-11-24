@@ -12,6 +12,7 @@ from werkzeug.utils import secure_filename
 
 from service.client import ServiceClient, celery_app, enqueue_task
 from app.shared.logging_utils import log_call as _log_call
+from app.shared.rate_limit import rate_limit
 
 
 app = Blueprint("pipeline_api", __name__)
@@ -45,6 +46,7 @@ def _task_status(task_id: str):
 
 
 @app.route("/bills", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def upload_bill():
@@ -106,6 +108,7 @@ def upload_bill():
     
 
 @app.route("/bills", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def list_bills():
@@ -124,6 +127,7 @@ def list_bills():
 
 
 @app.route("/bills/<bill_id>/status", methods=["GET"])
+@rate_limit("poll")
 @jwt_required()
 @_log_call
 def bill_status(bill_id: str):
@@ -131,6 +135,7 @@ def bill_status(bill_id: str):
 
 
 @app.route("/fullrun", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def fullrun():
@@ -209,6 +214,7 @@ def fullrun():
 
 
 @app.route("/gstr1", methods=["POST"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def generate_gstr1_report():
@@ -243,6 +249,7 @@ def generate_gstr1_report():
 
 
 @app.route("/tasks/<task_id>", methods=["GET"])
+@rate_limit("poll")
 @jwt_required()
 @_log_call
 def task_status(task_id: str):

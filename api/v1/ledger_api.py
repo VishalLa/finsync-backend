@@ -8,6 +8,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from service.client import ServiceClient
 from app.shared.logging_utils import log_call as _log_call
+from app.shared.rate_limit import rate_limit
 
 
 app = Blueprint("ledger_api", __name__)
@@ -37,6 +38,7 @@ def _parse_date(value: Optional[str], field: str) -> date:
 
 
 @app.route("/trial-balance", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def trial_balance():
@@ -57,6 +59,7 @@ def trial_balance():
 
 
 @app.route("/journal", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def list_journal_entries():
@@ -98,6 +101,7 @@ def list_journal_entries():
 
 
 @app.route("/tds", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def get_tds_register():

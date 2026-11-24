@@ -28,7 +28,7 @@ from .bank_rec_service.run_result_service_bank_rec import ResultBankRec
 from .ledger_service.store_ledger_data import PushLedgerData
 from .ledger_service.rebuild_service_ledger import RebuildServiceLedger
 
-from .reports.bank_recon_xlsx import write_bank_recon_xlsx
+from service.reports.bank_recon_xlsx import write_bank_recon_xlsx
 from .helper import _safe_float, fy_label_for_date, _log_call
 from ._base import Base
 

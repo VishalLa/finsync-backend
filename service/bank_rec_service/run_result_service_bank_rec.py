@@ -28,7 +28,7 @@ from schema import (
     BankStatement as SchemaBank
 )
 from .._base import Base
-from app.shared.bank_recon_xlsx import write_bank_recon_xlsx
+from service.reports.bank_recon_xlsx import write_bank_recon_xlsx
 from ..helper import _log_db_errors
 
 logger = logging.getLogger(__name__)

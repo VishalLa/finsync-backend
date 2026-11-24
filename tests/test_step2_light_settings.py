@@ -29,7 +29,7 @@ from app.shared.settings import Settings, get_settings
 
 settings = get_settings()
 assert issubclass(Config, Settings)
-assert str(shared.storage.storage_dir()) == settings.STORAGE_DIR
+assert str(app.shared.storage.storage_dir()) == settings.STORAGE_DIR
 celery_app = create_celery("step2-test", include=[])
 assert celery_app.conf.broker_url == settings.REDIS_URL
 

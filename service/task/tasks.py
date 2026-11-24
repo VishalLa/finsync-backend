@@ -370,7 +370,7 @@ def save_results(self, payload: dict) -> dict[str, str]:
             raise ValueError("normalized ledger and bank data must be lists")
         
         from schema import BankStatement, LedgerFormat
-        from app.shared.bank_recon_xlsx import write_bank_recon_xlsx
+        from service.reports.bank_recon_xlsx import write_bank_recon_xlsx
         from pathlib import Path
 
         report_path = Path(get_settings().STORAGE_DIR) / f"bank-recon-{message.run_id}.xlsx"

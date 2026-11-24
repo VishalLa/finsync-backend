@@ -16,6 +16,7 @@ from service.email_service import EmailService
 from service.client import ServiceClient
 
 from app.shared.logging_utils import log_call as _log_call
+from app.shared.rate_limit import fail_closed, rate_limit
 from app.shared.validation import is_valid_email
 
 app = Blueprint("auth", __name__)
@@ -53,6 +54,8 @@ def role_required(role: str):
 
 
 @app.route('/register', methods=['POST'])
+@fail_closed
+@rate_limit("auth")
 @_log_call
 def register_user():
     data = request.json or {}
@@ -92,6 +95,8 @@ def register_user():
 
 
 @app.route("/login", methods=["POST"])
+@fail_closed
+@rate_limit("auth")
 @_log_call
 def login_user():
     data = request.get_json(silent=True) or {}
@@ -129,6 +134,8 @@ def login_user():
 
 
 @app.route("/verify-email", methods=["GET"])
+@fail_closed
+@rate_limit("auth")
 @_log_call
 def verify_email():
     token = request.args.get("token")
@@ -143,6 +150,7 @@ def verify_email():
 
 
 @app.route("/logout", methods=["POST"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def logout_user():
@@ -159,6 +167,7 @@ def logout_user():
 
 
 @app.route("/me", methods=["GET"])
+@rate_limit("normal")
 @jwt_required()
 @_log_call
 def current_user():
@@ -176,6 +185,7 @@ def current_user():
 
 
 @app.route("/delete", methods=["DELETE"])
+@rate_limit("heavy")
 @jwt_required()
 @_log_call
 def delete_user():

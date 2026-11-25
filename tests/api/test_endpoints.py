@@ -19,6 +19,7 @@ from flask_jwt_extended import create_access_token
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 os.environ["DEBUG"] = "false"
 os.environ["STORAGE_DIR"] = "/tmp/latice-api-tests"
+os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 os.environ["RATELIMIT_REDIS_URL"] = "memory://"
 os.environ["RATELIMIT_ENABLED"] = "true"
 

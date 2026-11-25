@@ -10,8 +10,6 @@ from urllib.parse import urlparse, urlunparse
 from pydantic import Field
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import create_engine
-from sqlalchemy_utils import create_database, database_exists
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -227,6 +225,11 @@ def ensure_database_exists(sync_uri: str) -> None:
         ("postgres://", "postgresql://", "postgresql+")
     ):
         return
+
+    # Keep database dependencies out of API and worker startup paths that only
+    # import shared settings. Database services install these packages.
+    from sqlalchemy import create_engine
+    from sqlalchemy_utils import create_database, database_exists
 
     try:
         engine = create_engine(sync_uri)

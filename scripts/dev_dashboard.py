@@ -1,3 +1,10 @@
+# /// script
+# dependencies = [
+#   "streamlit",
+#   "requests",
+# ]
+# ///
+
 import streamlit as st
 import requests
 import json
@@ -191,3 +198,5 @@ else:
         tds_page()
     elif page == "GSTR1":
         gstr1_page()
+
+# uv run streamlit run dev_dashboard.py

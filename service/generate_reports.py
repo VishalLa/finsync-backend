@@ -27,7 +27,7 @@ from ._base import Base
 from .ledger_service.rebuild_service_ledger import RebuildServiceLedger
 from .bank_rec_service.run_result_service_bank_rec import ResultBankRec
 
-from service.reports.bank_recon_xlsx import write_bank_recon_xlsx
+from .reports.bank_recon_xlsx import write_bank_recon_xlsx
 from .reports.gstr1_xlsx import write_gstr1_xlsx
 from .reports.journal_xlsx import write_journal_xlsx
 from .reports.ledger_xlsx import write_ledger_xlsx

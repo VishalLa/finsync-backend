@@ -1,0 +1,63 @@
+{
+  "account_number": "50100123456789",
+  "holder": null,
+  "ifsc": "HDFC0000676",
+  "period": null,
+  "opening_balance": null,
+  "closing_balance": 15.0,
+  "ledger_type": null,
+  "source_pdf": "hdfc_statement_2025-08-15_to_2025-10-31_SCANNED.pdf",
+  "document_kind": "bank",
+  "bank_name": "HDFC Bank",
+  "parser": "HDFC_V1",
+  "page_sources": [
+    "paddleocr",
+    "paddleocr",
+    "paddleocr"
+  ],
+  "row_warnings": [
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 32: date could not be parsed."
+    ],
+    [],
+    [],
+    [],
+    [
+      "Row 36: date could not be parsed."
+    ]
+  ],
+  "warnings": [],
+  "balance_checks": 34,
+  "balance_failures": 0
+}

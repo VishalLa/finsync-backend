@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 import time
 from functools import lru_cache
+from urllib.parse import urlparse, urlunparse
 
 import redis
 
-from app.shared.rate_limit import limiter_redis_url, rate_limit_settings
+from app.shared.settings import get_settings, rate_limit_settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,18 @@ return 1
 """
 
 
+def _limiter_redis_url() -> str:
+    settings = rate_limit_settings()
+    if settings.RATELIMIT_REDIS_URL:
+        return settings.RATELIMIT_REDIS_URL
+    parsed = urlparse(get_settings().REDIS_URL)
+    return urlunparse(parsed._replace(path=f"/{settings.RATELIMIT_REDIS_DB}"))
+
+
 @lru_cache(maxsize=1)
 def _redis_client() -> redis.Redis:
     return redis.Redis.from_url(
-        limiter_redis_url(),
+        _limiter_redis_url(),
         socket_connect_timeout=1,
         socket_timeout=1,
         decode_responses=True,

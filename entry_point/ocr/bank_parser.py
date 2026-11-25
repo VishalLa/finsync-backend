@@ -60,6 +60,9 @@ BANK_TEMPLATE_HEADERS: Dict[str, List[str]] = {
     ],
     "GENERIC_V1": ["Date", "Txn_ID", "Narration", "Debit", "Credit", "Balance"],
     "GENERIC_SIGNED_V1": ["Date", "Description", "Amount", "Balance"],
+    "GENERIC_SPLIT_V1": [
+        "Date", "Description", "Reference", "Debit", "Credit", "Balance",
+    ],
 }
 
 _FOOTER_ROW_RE = re.compile(
@@ -277,6 +280,10 @@ class GenericSignedAmountParser(RegisteredBankParser):
     template_key = "GENERIC_SIGNED_V1"
 
 
+class GenericSplitAmountParser(RegisteredBankParser):
+    template_key = "GENERIC_SPLIT_V1"
+
+
 PARSER_REGISTRY: Dict[str, Type[LayoutParser]] = {
     "HDFC_V1": HdfcParser,
     "AXIS_V1": AxisParser,
@@ -290,6 +297,7 @@ PARSER_REGISTRY: Dict[str, Type[LayoutParser]] = {
     "YES_V2": YesBankV2Parser,
     "GENERIC_V1": GenericBankParser,
     "GENERIC_SIGNED_V1": GenericSignedAmountParser,
+    "GENERIC_SPLIT_V1": GenericSplitAmountParser,
 }
 
 

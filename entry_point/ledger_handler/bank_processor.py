@@ -36,7 +36,8 @@ _COLUMN_ALIASES = {
         "balance", "closing balance", "available balance"
         ),
     "txn_id": (
-        "txn id", "transaction id", "reference no", "ref no", "cheque no", "chq no",
+        "txn id", "transaction id", "reference", "reference id", "reference number",
+        "reference no", "ref no", "cheque no", "chq no",
     ),
 }
 
@@ -186,6 +187,8 @@ def parse_bank_date(
         return None
 
     formats = ([date_format] if date_format else []) + [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
         "%Y-%m-%d",
         "%d-%m-%Y",
         "%d-%m-%y",

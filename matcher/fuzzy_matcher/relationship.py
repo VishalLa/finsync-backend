@@ -118,13 +118,12 @@ class Relationship(Matcher):
         if valid:
             self._cal.prepare(min(valid), max(valid))
 
-    @staticmethod
-    def _amount(record: Any, outgoing: bool, ledger: bool) -> float:
+    def _amount(self, record: Any, outgoing: bool, ledger: bool) -> float:
         if ledger:
             accessor = "gl_out" if outgoing else "gl_in"
         else:
             accessor = "bank_out" if outgoing else "bank_in"
-        return float(getattr(record, accessor, lambda _: 0.0)(record))
+        return float(getattr(self, accessor)(record))
 
     def _amount_pair(
         self, 

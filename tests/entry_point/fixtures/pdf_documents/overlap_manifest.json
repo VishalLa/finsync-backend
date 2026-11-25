@@ -1,0 +1,406 @@
+{
+  "note": "Synthetic data. Overlap windows are inclusive. A txn is a duplicate across docs only if bank+account+ref+date+amount match; 'lookalike' txns share date/amount/counterparty but have different refs and must remain separate.",
+  "documents": [
+    {
+      "file": "hdfc_statement_2025-07-01_to_2025-08-31.pdf",
+      "type": "statement",
+      "bank": "HDFC",
+      "start": "2025-07-01",
+      "end": "2025-08-31",
+      "rows": 48,
+      "opening_balance": 250000.0,
+      "closing_balance": 285169.03
+    },
+    {
+      "file": "hdfc_statement_2025-08-15_to_2025-10-31.pdf",
+      "type": "statement",
+      "bank": "HDFC",
+      "start": "2025-08-15",
+      "end": "2025-10-31",
+      "rows": 63,
+      "opening_balance": 310412.59,
+      "closing_balance": 379123.44
+    },
+    {
+      "file": "axis_statement_2025-07-01_to_2025-09-10.pdf",
+      "type": "statement",
+      "bank": "AXIS",
+      "start": "2025-07-01",
+      "end": "2025-09-10",
+      "rows": 65,
+      "opening_balance": 180000.0,
+      "closing_balance": 385251.88
+    },
+    {
+      "file": "axis_statement_2025-08-20_to_2025-10-31.pdf",
+      "type": "statement",
+      "bank": "AXIS",
+      "start": "2025-08-20",
+      "end": "2025-10-31",
+      "rows": 62,
+      "opening_balance": 300998.88,
+      "closing_balance": 438100.7
+    },
+    {
+      "file": "unified_ledger_2025-07-01_to_2025-09-15.pdf",
+      "type": "ledger",
+      "bank": "HDFC+AXIS",
+      "start": "2025-07-01",
+      "end": "2025-09-15",
+      "rows": 131
+    },
+    {
+      "file": "unified_ledger_2025-09-01_to_2025-10-31.pdf",
+      "type": "ledger",
+      "bank": "HDFC+AXIS",
+      "start": "2025-09-01",
+      "end": "2025-10-31",
+      "rows": 99
+    }
+  ],
+  "overlaps": [
+    {
+      "a": "hdfc_statement_2025-07-01_to_2025-08-31.pdf",
+      "b": "hdfc_statement_2025-08-15_to_2025-10-31.pdf",
+      "shared_txns": 14,
+      "shared_ids_sample": [
+        "H0035",
+        "H0036",
+        "H0037",
+        "H0038",
+        "H0039"
+      ]
+    },
+    {
+      "a": "hdfc_statement_2025-07-01_to_2025-08-31.pdf",
+      "b": "unified_ledger_2025-07-01_to_2025-09-15.pdf",
+      "shared_txns": 48,
+      "shared_ids_sample": [
+        "H0001",
+        "H0002",
+        "H0003",
+        "H0004",
+        "H0005"
+      ]
+    },
+    {
+      "a": "hdfc_statement_2025-08-15_to_2025-10-31.pdf",
+      "b": "unified_ledger_2025-07-01_to_2025-09-15.pdf",
+      "shared_txns": 28,
+      "shared_ids_sample": [
+        "H0035",
+        "H0036",
+        "H0037",
+        "H0038",
+        "H0039"
+      ]
+    },
+    {
+      "a": "hdfc_statement_2025-08-15_to_2025-10-31.pdf",
+      "b": "unified_ledger_2025-09-01_to_2025-10-31.pdf",
+      "shared_txns": 49,
+      "shared_ids_sample": [
+        "H0049",
+        "H0050",
+        "H0051",
+        "H0052",
+        "H0053"
+      ]
+    },
+    {
+      "a": "axis_statement_2025-07-01_to_2025-09-10.pdf",
+      "b": "axis_statement_2025-08-20_to_2025-10-31.pdf",
+      "shared_txns": 24,
+      "shared_ids_sample": [
+        "A0042",
+        "A0043",
+        "A0044",
+        "A0045",
+        "A0046"
+      ]
+    },
+    {
+      "a": "axis_statement_2025-07-01_to_2025-09-10.pdf",
+      "b": "unified_ledger_2025-07-01_to_2025-09-15.pdf",
+      "shared_txns": 65,
+      "shared_ids_sample": [
+        "A0001",
+        "A0002",
+        "A0003",
+        "A0004",
+        "A0005"
+      ]
+    },
+    {
+      "a": "axis_statement_2025-07-01_to_2025-09-10.pdf",
+      "b": "unified_ledger_2025-09-01_to_2025-10-31.pdf",
+      "shared_txns": 12,
+      "shared_ids_sample": [
+        "A0054",
+        "A0055",
+        "A0056",
+        "A0057",
+        "A0058"
+      ]
+    },
+    {
+      "a": "axis_statement_2025-08-20_to_2025-10-31.pdf",
+      "b": "unified_ledger_2025-07-01_to_2025-09-15.pdf",
+      "shared_txns": 28,
+      "shared_ids_sample": [
+        "A0042",
+        "A0043",
+        "A0044",
+        "A0045",
+        "A0046"
+      ]
+    },
+    {
+      "a": "axis_statement_2025-08-20_to_2025-10-31.pdf",
+      "b": "unified_ledger_2025-09-01_to_2025-10-31.pdf",
+      "shared_txns": 50,
+      "shared_ids_sample": [
+        "A0054",
+        "A0055",
+        "A0056",
+        "A0057",
+        "A0058"
+      ]
+    },
+    {
+      "a": "unified_ledger_2025-07-01_to_2025-09-15.pdf",
+      "b": "unified_ledger_2025-09-01_to_2025-10-31.pdf",
+      "shared_txns": 30,
+      "shared_ids_sample": [
+        "A0054",
+        "A0055",
+        "A0056",
+        "A0057",
+        "A0058"
+      ]
+    }
+  ],
+  "unique_transactions": {
+    "HDFC": 97,
+    "AXIS": 103
+  },
+  "total_row_appearances_across_all_docs": 468,
+  "cross_bank_pairs": [
+    {
+      "date": "2025-07-10",
+      "amount": 25000.0,
+      "direction": "HDFC->AXIS",
+      "utr": "786922794461",
+      "hdfc_id": "H0012",
+      "axis_id": "A0010"
+    },
+    {
+      "date": "2025-08-18",
+      "amount": 15000.0,
+      "direction": "HDFC->AXIS",
+      "utr": "823406579614",
+      "hdfc_id": "H0039",
+      "axis_id": "A0040"
+    },
+    {
+      "date": "2025-08-25",
+      "amount": 12000.0,
+      "direction": "HDFC->AXIS",
+      "utr": "400584896194",
+      "hdfc_id": "H0044",
+      "axis_id": "A0048"
+    },
+    {
+      "date": "2025-09-05",
+      "amount": 20000.0,
+      "direction": "HDFC->AXIS",
+      "utr": "838915316119",
+      "hdfc_id": "H0055",
+      "axis_id": "A0061"
+    },
+    {
+      "date": "2025-09-28",
+      "amount": 8000.0,
+      "direction": "AXIS->HDFC",
+      "utr": "765305229387",
+      "hdfc_id": "H0068",
+      "axis_id": "A0076"
+    },
+    {
+      "date": "2025-10-12",
+      "amount": 10000.0,
+      "direction": "HDFC->AXIS",
+      "utr": "480895226531",
+      "hdfc_id": "H0084",
+      "axis_id": "A0090"
+    }
+  ],
+  "lookalikes": {
+    "lookalike:H1": [
+      "H0042",
+      "H0043"
+    ],
+    "lookalike:H2": [
+      "H0079",
+      "H0080"
+    ],
+    "lookalike:A1": [
+      "A0057",
+      "A0058"
+    ]
+  },
+  "recurring": {
+    "recurring:salary": [
+      {
+        "id": "H0001",
+        "date": "2025-07-01",
+        "amount": 85000.0
+      },
+      {
+        "id": "H0023",
+        "date": "2025-08-01",
+        "amount": 85000.0
+      },
+      {
+        "id": "H0049",
+        "date": "2025-09-01",
+        "amount": 85000.0
+      },
+      {
+        "id": "H0074",
+        "date": "2025-10-01",
+        "amount": 85000.0
+      },
+      {
+        "id": "A0001",
+        "date": "2025-07-01",
+        "amount": 62000.0
+      },
+      {
+        "id": "A0029",
+        "date": "2025-08-01",
+        "amount": 62000.0
+      },
+      {
+        "id": "A0054",
+        "date": "2025-09-01",
+        "amount": 62000.0
+      },
+      {
+        "id": "A0080",
+        "date": "2025-10-01",
+        "amount": 62000.0
+      }
+    ],
+    "recurring:rent": [
+      {
+        "id": "H0004",
+        "date": "2025-07-03",
+        "amount": 22000.0
+      },
+      {
+        "id": "H0025",
+        "date": "2025-08-03",
+        "amount": 22000.0
+      },
+      {
+        "id": "H0051",
+        "date": "2025-09-03",
+        "amount": 22000.0
+      },
+      {
+        "id": "H0076",
+        "date": "2025-10-03",
+        "amount": 22000.0
+      }
+    ],
+    "recurring:emi": [
+      {
+        "id": "H0008",
+        "date": "2025-07-05",
+        "amount": 12450.0
+      },
+      {
+        "id": "H0027",
+        "date": "2025-08-05",
+        "amount": 12450.0
+      },
+      {
+        "id": "H0053",
+        "date": "2025-09-05",
+        "amount": 12450.0
+      },
+      {
+        "id": "H0078",
+        "date": "2025-10-05",
+        "amount": 12450.0
+      }
+    ],
+    "recurring:netflix": [
+      {
+        "id": "H0013",
+        "date": "2025-07-12",
+        "amount": 649.0
+      },
+      {
+        "id": "H0032",
+        "date": "2025-08-12",
+        "amount": 649.0
+      },
+      {
+        "id": "H0059",
+        "date": "2025-09-12",
+        "amount": 649.0
+      },
+      {
+        "id": "H0083",
+        "date": "2025-10-12",
+        "amount": 649.0
+      }
+    ],
+    "recurring:sip": [
+      {
+        "id": "A0007",
+        "date": "2025-07-07",
+        "amount": 5000.0
+      },
+      {
+        "id": "A0034",
+        "date": "2025-08-07",
+        "amount": 5000.0
+      },
+      {
+        "id": "A0063",
+        "date": "2025-09-07",
+        "amount": 5000.0
+      },
+      {
+        "id": "A0085",
+        "date": "2025-10-07",
+        "amount": 5000.0
+      }
+    ],
+    "recurring:airtel": [
+      {
+        "id": "A0016",
+        "date": "2025-07-15",
+        "amount": 1199.0
+      },
+      {
+        "id": "A0038",
+        "date": "2025-08-15",
+        "amount": 1199.0
+      },
+      {
+        "id": "A0068",
+        "date": "2025-09-15",
+        "amount": 1199.0
+      },
+      {
+        "id": "A0092",
+        "date": "2025-10-15",
+        "amount": 1199.0
+      }
+    ]
+  }
+}

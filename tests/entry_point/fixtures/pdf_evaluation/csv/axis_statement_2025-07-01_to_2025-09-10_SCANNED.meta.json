@@ -1,0 +1,125 @@
+{
+  "account_number": "917010012345678",
+  "holder": "PRIYA SHARMA Customer ID:912345678 Address :45 GREEN PARK EXTN,NEW DELHI 110016",
+  "ifsc": "ICIC0001234",
+  "period": null,
+  "opening_balance": 0.0,
+  "closing_balance": 385251.88,
+  "ledger_type": null,
+  "source_pdf": "axis_statement_2025-07-01_to_2025-09-10_SCANNED.pdf",
+  "document_kind": "bank",
+  "bank_name": "HDFC Bank",
+  "parser": "HDFC_V1",
+  "page_sources": [
+    "paddleocr",
+    "paddleocr"
+  ],
+  "row_warnings": [
+    [
+      "Row 1: corrected OCR characters in numeric field 'debit'.",
+      "Row 1: running balance does not match the transaction amount."
+    ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 10: could not parse debit amount."
+    ],
+    [],
+    [],
+    [],
+    [
+      "Row 14: corrected OCR characters in numeric field 'debit'.",
+      "Row 14: running balance does not match the transaction amount."
+    ],
+    [
+      "Row 15: corrected OCR characters in numeric field 'debit'.",
+      "Row 15: running balance does not match the transaction amount."
+    ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 29: corrected OCR characters in numeric field 'debit'.",
+      "Row 29: running balance does not match the transaction amount."
+    ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 36: corrected OCR characters in numeric field 'debit'.",
+      "Row 36: running balance does not match the transaction amount."
+    ],
+    [],
+    [],
+    [],
+    [
+      "Row 40: could not parse debit amount."
+    ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 48: could not parse debit amount."
+    ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 54: corrected OCR characters in numeric field 'debit'.",
+      "Row 54: running balance does not match the transaction amount."
+    ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 61: could not parse debit amount."
+    ],
+    [],
+    [],
+    [],
+    [],
+    [
+      "Row 66: date could not be parsed.",
+      "Row 66: corrected OCR characters in numeric field 'debit'."
+    ]
+  ],
+  "warnings": [
+    "Row 1: running balance does not match the transaction amount.",
+    "Row 14: running balance does not match the transaction amount.",
+    "Row 15: running balance does not match the transaction amount.",
+    "Row 29: running balance does not match the transaction amount.",
+    "Row 36: running balance does not match the transaction amount.",
+    "Row 54: running balance does not match the transaction amount.",
+    "Balance validation failed for 6/65 checked rows and the document would be quarantined; loading is aborted."
+  ],
+  "balance_checks": 65,
+  "balance_failures": 6
+}

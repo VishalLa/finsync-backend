@@ -1,0 +1,1 @@
+"""Application shared component tests."""

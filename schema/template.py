@@ -43,6 +43,19 @@ GENERIC_SIGNED_V1 = _t(
     fingerprint={"Date", "Description", "Amount", "Balance"},
 )
 
+GENERIC_SPLIT_V1 = _t(
+    bank_name="Generic Bank",
+    version="split-v1",
+    date_column="Date",
+    date_format="%Y-%m-%d %H:%M",
+    narration_column="Description",
+    debit_column="Debit",
+    credit_column="Credit",
+    txn_id_column="Reference",
+    balance_column="Balance",
+    fingerprint={"Date", "Description", "Reference", "Debit", "Credit", "Balance"},
+)
+
 AXIS_V1 = _t(
     bank_name="Axis Bank", 
     version="v1",
@@ -186,6 +199,7 @@ TEMPLATE_REGISTRY: Dict[str, dict] = {
     "YES_V2": YES_V2,
     "GENERIC_V1": GENERIC_V1,
     "GENERIC_SIGNED_V1": GENERIC_SIGNED_V1,
+    "GENERIC_SPLIT_V1": GENERIC_SPLIT_V1,
 }
 
 

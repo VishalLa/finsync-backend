@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from . import run_quota
 from .storage import read_json, run_ref, write_json
 
 
@@ -26,6 +27,14 @@ def set_status(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     write_json(ref, data)
+
+    stages = data["stages"]
+    terminal = any(item.get("state") == "failed" for item in stages.values()) or all(
+        stages.get(required, {}).get("state") == "done"
+        for required in ("entry", "inputs", "matcher", "service", "results")
+    )
+    if terminal and data.get("user_id") is not None:
+        run_quota.release(data["user_id"], run_id)
 
 
 def get_status(run_id: str) -> dict:

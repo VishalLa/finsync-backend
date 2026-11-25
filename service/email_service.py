@@ -6,7 +6,7 @@ import smtplib
 
 from flask import current_app
 
-from core.security import generate_verification_token
+from app.shared.security import generate_verification_token
 
 
 class EmailService:

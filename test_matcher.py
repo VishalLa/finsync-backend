@@ -30,7 +30,7 @@ matcher_package = importlib.util.module_from_spec(package_spec)
 sys.modules["matcher"] = matcher_package
 package_spec.loader.exec_module(matcher_package)
 
-from core.config import Config  # noqa: E402
+from app.shared.settings import Config  # noqa: E402
 from matcher import MatchMemory, reconcile  # noqa: E402
 from matcher.memory_match import JSONFileBackend  # noqa: E402
 from schema import BankStatement, LedgerFormat  # noqa: E402

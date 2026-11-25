@@ -1,7 +1,7 @@
 import os
 
 from app import create_app
-from core.config import Config
+from app.shared.settings import Config
 from manage_db import initialize_database
 
 

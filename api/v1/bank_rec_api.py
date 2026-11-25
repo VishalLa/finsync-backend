@@ -88,16 +88,18 @@ def start_reconciliation():
 
     run_id = uuid.uuid4().hex
     user_id = str(get_jwt_identity())
-    # TODO(phase-2): release this quota when the run reaches a terminal state.
     if not run_quota.acquire(user_id, run_id):
         return jsonify({
             "ok": False,
             "error": "Too many active reconciliations. Wait for one to finish and try again.",
         }), 429
+        
     ledger_extension = Path(secure_filename(ledger_file.filename)).suffix.lower()
     bank_extension = Path(secure_filename(bank_file.filename)).suffix.lower()
+    
     ledger_ref = run_ref(run_id, "raw", f"ledger{ledger_extension}")
     bank_ref = run_ref(run_id, "raw", f"bank{bank_extension}")
+    
     message = EntryProcessMsg(
         run_id=run_id,
         user_id=user_id,

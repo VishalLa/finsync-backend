@@ -28,8 +28,8 @@ from schema import (
     BankStatement as SchemaBank
 )
 from .._base import Base
-from service.reports.bank_recon_xlsx import write_bank_recon_xlsx
 from ..helper import _log_db_errors
+from ..reports.bank_recon_xlsx import write_bank_recon_xlsx
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ class ResultBankRec:
         return f"bank-recon-{run_id}.xlsx"
 
     def _report_path(self, run_id: str) -> str:
-        from core.config import Config
+        from app.shared.settings import Config
         return os.path.join(Config().from_env().STORAGE_DIR, self._report_filename(run_id))
 
 

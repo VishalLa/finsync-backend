@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from database import DatabaseManager
-from core.config import Config
+from app.shared.settings import Config
 
 class Base:
     def __init__(

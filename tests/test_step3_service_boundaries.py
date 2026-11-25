@@ -112,7 +112,7 @@ def test_fail_stage_records_storage_status_and_sends_db_message(
 def test_security_tokens_still_use_flask_app_configuration() -> None:
     from flask import Flask
 
-    from core.security import generate_verification_token, verify_token
+    from app.shared.security import generate_verification_token, verify_token
 
     app = Flask(__name__)
     app.config["JWT_SECRET_KEY"] = "step-three-regression-secret"

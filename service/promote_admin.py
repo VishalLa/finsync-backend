@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from core.config import Config
+from app.shared.settings import Config
 from database.session import DatabaseManager
 from database.user import User, UserRole
 

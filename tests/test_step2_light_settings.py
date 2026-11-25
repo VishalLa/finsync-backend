@@ -17,10 +17,10 @@ assert not {"SECRET_KEY", "JWT_SECRET_KEY", "DATABASE_URL"} & os.environ.keys()
 import app.shared.storage
 
 assert "pandas" not in sys.modules
-assert "core.config" not in sys.modules
+assert "core" not in sys.modules
 assert "database" not in sys.modules
 
-from core.config import Config
+from app.shared.settings import Config
 from matcher import reconcile
 import matcher
 from schema import BankStatement, LedgerFormat

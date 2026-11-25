@@ -8,7 +8,7 @@ from sqlalchemy import DateTime, String, Integer, Boolean
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from core.security import hash_password, verify_password
+from app.shared.security import hash_password, verify_password
 
 from .base import Base, _uuid
 from .bank_rec_model import ReconciliationRunModel

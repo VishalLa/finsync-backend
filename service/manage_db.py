@@ -1,4 +1,4 @@
-from core.config import Config
+from app.shared.settings import Config
 from database import DatabaseManager
 
 

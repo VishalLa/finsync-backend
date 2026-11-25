@@ -4,7 +4,7 @@ import json
 
 from langchain_core.runnables import RunnableLambda
 
-from core.config import Config
+from app.shared.settings import Config
 from matcher.ai_matcher.ai_matcher import ai_match
 from matcher.residual_reconciler import reconcile_residuals
 from schema import BankStatement, LedgerFormat

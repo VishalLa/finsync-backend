@@ -19,7 +19,6 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
 
-from core.config import Config
 from .base import Base
 
 from . import user

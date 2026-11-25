@@ -12,7 +12,7 @@ from database import (
     User, 
     RevokedTokenModel,
 )
-from core.security import verify_token
+from app.shared.security import verify_token
 
 from .helper import _log_db_errors
 from ._base import Base

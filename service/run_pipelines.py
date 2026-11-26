@@ -200,32 +200,30 @@ class RunBankRec:
         
         db_run_id = None
         try:
-            run_row = self.bank_rec_service.create_run(
+            self.bank_rec_service.persist_run_inputs(
                 celery_task_id=run_id,
-                run_name=run_name,
                 user_id=user_id,
+                run_name=run_name,
                 bank_name=bank_data.get("bank_name"),
                 template_version=bank_data.get("template_version"),
                 ledger_source=ledger_data.get("source"),
                 bank_csv_path=bank_path,
                 ledger_csv_path=ledger_path,
+                statements_data=statements_list,
+                ledgers_data=ledgers_list,
             )
             
-            if run_row is not None:
-                db_run_id = run_row.id
-                
-                persisted = self.bank_rec_service.push_all_data(
-                    statements_data=statements_list,
-                    ledgers_data=ledgers_list,
-                    run_id=db_run_id
+            run_row = self.result_service.find_run(run_id, user_id)
+            if run_row is None:
+                raise RuntimeError(
+                    f"Run {run_id} was persisted but could not be retrieved"
                 )
-                
-                if not persisted:
-                    print(f"Ledger/bank persistence failed for run_id={run_id}; "
-                    f"match-result FK linkage will be unresolved for this run.")
-            
+            db_run_id = run_row.id
+
         except Exception as e:
-            print(f"DB run creation/persistence failed for run_id={run_id}: {e}")
+            raise RuntimeError(
+                f"DB run creation/persistence failed for run_id={run_id}: {e}"
+            ) from e
                     
         
         all_warnings = ledger_data.get("war")

@@ -50,9 +50,12 @@ def reset_shared_llm() -> None:
     _SHARED_LLM = None
 
 
-def invoke_with_metrics(chain: Any, payload: Dict[str, Any], *, phase: str, details: str = "") -> Any:
+def invoke_with_metrics(chain: Any, payload: Any, *, phase: str, details: str = "") -> Any:
     """Invoke one LLM request and log its duration and approximate payload size."""
-    prompt_chars = sum(len(str(value)) for value in payload.values())
+    if isinstance(payload, dict):
+        prompt_chars = sum(len(str(value)) for value in payload.values())
+    else:
+        prompt_chars = len(str(payload))
     started = perf_counter()
     try:
         result = chain.invoke(payload)

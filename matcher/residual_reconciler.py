@@ -576,10 +576,14 @@ class ResidualReconciler(Matcher):
             source = "llm"
             if llm_available and prompt_template is not None:
                 try:
-                    chain = prompt_template | self.llm
+                    prompt = prompt_template.format_messages(
+                        narration=narration,
+                        amount=amt,
+                        direction=direction,
+                    )
                     raw = invoke_with_metrics(
-                        chain,
-                        {"narration": narration, "amount": amt, "direction": direction},
+                        self.llm,
+                        prompt,
                         phase="journal_draft",
                         details=f"bank_id={getattr(bank, 'row_index', None)}",
                     )

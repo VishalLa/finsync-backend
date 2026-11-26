@@ -12,7 +12,7 @@ from app.shared.message import (
     T_SERVICE_SAVE,
 )
 from app.shared.settings import get_settings
-from app.shared.status import set_status
+from app.shared.status import is_cancel_requested, set_status
 from app.shared.storage import read_json, run_ref, write_json
 
 from .celery_app import celery_app
@@ -25,6 +25,12 @@ def run_matcher(self, payload: dict) -> dict[str, str]:
     except BadMessage as exc:
         reject_message(celery_app, payload, "matcher", exc)
         raise
+
+    if is_cancel_requested(message.run_id):
+        return {
+            "status": "cancelled", 
+            "run_id": message.run_id
+        }
 
     set_status(
         run_id=message.run_id,
@@ -63,6 +69,13 @@ def run_matcher(self, payload: dict) -> dict[str, str]:
             all_warnings=list(warnings),
             enable_ai_matching=enable_ai_matching,
         )
+        
+        if is_cancel_requested(message.run_id):
+            return {
+                "status": "cancelled", 
+                "run_id": message.run_id
+            }
+        
         result["ai_matching_enabled"] = enable_ai_matching
         result.setdefault("summary", {})["ai_matching_enabled"] = enable_ai_matching
 

@@ -25,7 +25,8 @@ from .ai_matcher.ai_utils import (
     _directions_compatible,
     _get_direction_amount,
     _safe_parse_json,
-    get_shared_llm
+    get_shared_llm,
+    invoke_with_metrics,
 )
 from .fuzzy_matcher import BusinessCalendar, find_subsets
 
@@ -552,7 +553,6 @@ class ResidualReconciler(Matcher):
             try:
                 if self.llm is None:
                     self.llm = get_shared_llm(config=self.config)
-                self.llm.invoke("ping")
             except Exception as conn_err:
                 llm_available = False
                 skip_reason = str(conn_err)
@@ -577,10 +577,18 @@ class ResidualReconciler(Matcher):
             if llm_available and prompt_template is not None:
                 try:
                     chain = prompt_template | self.llm
-                    raw = chain.invoke({"narration": narration, "amount": amt, "direction": direction})
+                    raw = invoke_with_metrics(
+                        chain,
+                        {"narration": narration, "amount": amt, "direction": direction},
+                        phase="journal_draft",
+                        details=f"bank_id={getattr(bank, 'row_index', None)}",
+                    )
                     suggestion = _safe_parse_json(raw, DraftAccountSuggestion)
-                except Exception:
+                    
+                except Exception as exc:
                     suggestion = None
+                    llm_available = False
+                    skip_reason = str(exc)
 
             if suggestion is None:
                 suggestion = ResidualReconciler._heuristic_draft_fallback(narration)

@@ -43,6 +43,7 @@ GL Records + Bank Records
 ## Table of Contents
 
 - [API Reference](API_REFERENCE.md)
+- [AI matching and residual reconciliation](ai_matcher/README.md)
 - [Module Map](#module-map)
 - [Pipeline Workflow](#pipeline-workflow)
   - [Phase 0 — Same-Side Detection](#phase-0--same-side-detection)
@@ -219,25 +220,26 @@ recurring vendor payment).
 
 `AIMatcher.match()`
 
-Uses a local LLM (Ollama, `phi3` model by default) for semantic matching that
+Uses a local LLM (Ollama, `gemma3:4b` model by default) for semantic matching that
 heuristics can't express — e.g. narrations that mean the same thing but use
-different vendor abbreviations, word order, or paraphrasing.
-The shared Ollama client uses an 8192-token context window. Client
-initialization errors are logged and surfaced in the AI skip reason rather
-than being deferred as a `None`-client failure.
+different vendor abbreviations, word order, or paraphrasing. The shared Ollama
+client uses an 8192-token context window and caps generated output at 768 tokens.
+See the [AI matching and residual reconciliation guide](ai_matcher/README.md)
+for call batching, candidate validation, runtime diagnostics, and the separate
+AI journal-drafting pass.
 
-1. **Connectivity check** — pings the LLM first. If unreachable, the entire
-   phase is skipped gracefully; the result includes `ai_skipped: True` and
-   the failure reason, and a warning is surfaced. Residual records remain
-   unreconciled. No exception propagates.
+1. **Client initialization** — creates or reuses the shared Ollama client
+   without running a separate model-generation ping. A connection failure on
+   the first real request is logged and the remaining AI matching is skipped.
 2. **Batch matcher (1-to-1)** — `AIMatcher.batch_match()`
    - Slides a **30-day window** (7-day overlap) across the combined date
-     range of remaining records.
+     range of remaining records. Candidate pairs are only evaluated once
+     across overlapping windows.
    - Each LLM request contains at most 20 GL and 20 bank records, ordered by
-     proximity to the window midpoint. If a window has more records, all GL
-     and bank chunks are paired so records beyond the first 20 are also
-     considered; chunk pairs without an amount/direction-compatible candidate
-     are skipped.
+     proximity to the window midpoint. Records without an eligible pair are
+     excluded, and the prompt lists the exact amount/direction/date candidate
+     pairs that may be returned. Chunk pairs without a new eligible pair are
+     skipped.
    - Every proposed match passes two gates before acceptance:
      - **Confidence gate** — must be ≥ `CONFIDENCE_THRESHOLD = 0.75`, else
        routed to `AUDIT_QUEUE` as `LOW_CONFIDENCE`.
@@ -252,8 +254,10 @@ than being deferred as a `None`-client failure.
    - Pre-filters candidate ledger entries per bank row (±10-day window and
      amount ≤ bank amount + tolerance), then searches subsets of 2–6 entries
      with bounded work (up to 200,000 search nodes and 20 valid options).
-     The LLM chooses only among amount-verified subsets; an incomplete search
-     is sent to the audit queue instead of being treated as exhaustive.
+     A request can cover up to two bank rows when their valid ledger candidate
+     sets do not overlap. The LLM chooses only among amount-verified subsets;
+     an incomplete search is sent to the audit queue instead of being treated
+     as exhaustive.
    - Same confidence gate (≥ 0.75) and a many-to-one bouncer
      (`_passes_many_to_one_bouncer`) that verifies the proposed ledger
      entries actually sum to the bank amount within tolerance and share a
@@ -480,7 +484,7 @@ all matches uniformly.
 - `langchain-ollama`, `langchain-core`, `pydantic` — LLM orchestration and
   structured-output parsing (Phases 4 & 5d).
 - A running **Ollama** server (`http://127.0.0.1:11434` by default) serving
-  the `phi3` model. The pipeline is fully functional without it — every AI
+  the `gemma3:4b` model. The pipeline is fully functional without it — every AI
   step degrades gracefully to heuristics/manual review and surfaces a
   warning rather than failing.
 - `schema` (internal) — `BankStatement`, `LedgerFormat`,

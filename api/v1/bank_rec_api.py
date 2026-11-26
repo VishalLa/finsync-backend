@@ -8,13 +8,13 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
-from service.client import ServiceClient, enqueue_task
+from service.client import ServiceClient, celery_app, enqueue_task
 
 from app.shared.logging_utils import log_call as _log_call
 from app.shared.message import EntryProcessMsg, T_ENTRY_PROCESS
 from app.shared.rate_limit import rate_limit
 from app.shared import run_quota
-from app.shared.status import get_status, set_status
+from app.shared.status import get_status, request_cancel, set_status
 from app.shared.storage import resolve, run_ref, save_stream
 
 
@@ -41,6 +41,47 @@ def _allowed(filename: str) -> bool:
 
 def _allowed_ledger(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in {"csv", "xlsx", "pdf"}
+
+
+def _revoke_run_tasks(run_id: str) -> None:
+    """Revoke queued and active Celery tasks whose arguments include this run."""
+    inspector = celery_app.control.inspect(timeout=2)
+    active = inspector.active() or {}
+    reserved = inspector.reserved() or {}
+    scheduled = inspector.scheduled() or {}
+
+    def includes_run(value: Any) -> bool:
+        if value == run_id:
+            return True
+        if isinstance(value, dict):
+            return any(includes_run(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(includes_run(item) for item in value)
+        if isinstance(value, str):
+            return run_id in value
+        return False
+
+    active_ids = set()
+    for worker_tasks in active.values():
+        for task in worker_tasks:
+            if includes_run(task.get("args")) or includes_run(task.get("kwargs")):
+                active_ids.add(task.get("id"))
+
+    task_ids = set(active_ids)
+    for worker_tasks in (*reserved.values(), *scheduled.values()):
+        for task in worker_tasks:
+            request = task.get("request", task)
+            if includes_run(request.get("args")) or includes_run(request.get("kwargs")):
+                task_ids.add(request.get("id"))
+                
+    # The initial entry task is explicitly assigned the run id.
+    task_ids.add(run_id)
+    for task_id in task_ids - {None}:
+        celery_app.control.revoke(
+            task_id,
+            terminate=task_id in active_ids,
+            signal="SIGTERM",
+        )
 
 
 @app.route("/reconciliation/options", methods=["GET"])
@@ -384,9 +425,31 @@ def delete_previous_run(user_id: str, run_id: str):
         }), 403
 
     _, result_service, _ = _services()
+    run = result_service.get_run_for_user(
+        user_id=authenticated_user_id,
+        run_id=run_id,
+        include_records=False,
+    )
+    if run is None:
+        return jsonify({"ok": False, "error": "Run not found"}), 404
+
+    public_run_id = run.get("run_id") or run_id
+    processing = run.get("state") == "STARTED"
+    if processing:
+        try:
+            request_cancel(public_run_id, authenticated_user_id)
+            _revoke_run_tasks(public_run_id)
+        except Exception:
+            app.logger.exception("Could not stop reconciliation run %s", run_id)
+            return jsonify({
+                "ok": False,
+                "error": "Could not stop the running reconciliation. The run was not deleted.",
+            }), 503
+
     result = result_service.delete_run_for_user(
         user_id=authenticated_user_id,
         run_id=run_id,
+        allow_processing=processing,
     )
     if result is None:
         return jsonify({
@@ -396,7 +459,7 @@ def delete_previous_run(user_id: str, run_id: str):
     if not result["deleted"]:
         return jsonify({
             "ok": False,
-            "error": "A reconciliation that is still processing cannot be deleted",
+            "error": "Could not delete the reconciliation run",
         }), 409
 
     return jsonify({

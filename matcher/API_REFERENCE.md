@@ -179,24 +179,29 @@ signature; `_pattern_key(ledger_sig, bank_sig)` creates the storage key;
 ### `AIMatcher(config, llm=None, tol=0.50, same_side=True)`
 Stores settings, optional LLM, amount tolerance and orientation. `run(result)`
 expects `UNRECONCILED_LEDGER`, `UNRECONCILED_BANK`, and optional `MATCHED`;
-returns `{"FINAL_RESULT": ...}`. It pings the LLM first. If unavailable, all
-input rows remain residual and the result marks `ai_skipped` with a reason.
+returns `{"FINAL_RESULT": ...}`. It initializes the shared Ollama client
+without a separate generation ping. A failed first request marks AI matching
+skipped and leaves unprocessed rows residual.
 
 `batch_match(unreconciled)` performs 1:1 proposals in overlapping date windows.
-A proposal must be within `tol`, have compatible direction, pass the LLM
-confidence threshold (0.75), and pass the deterministic amount/direction
-bouncer. Unknown IDs, duplicate IDs, low confidence, or failed validation are
-not accepted; reviewable proposals are put in the audit queue.
+It evaluates amount/direction/date candidate pairs once across overlapping
+windows and sends only records participating in eligible pairs. A proposal
+must be a submitted candidate, within `tol`, have compatible direction, pass
+the LLM confidence threshold (0.75), and pass the deterministic bouncer.
+Unknown IDs, duplicate IDs, low confidence, or failed validation are not
+accepted; reviewable proposals are put in the audit queue.
 
 `residual_match(gl_remaining, bk_remaining)` checks bank rows against bounded,
 amount-verified subsets of ledger rows. Candidate entries must satisfy the
 configured direction and candidate date window; subset sizes and search work
-are bounded. The LLM selects only from verified combinations; confidence and
+are bounded. Up to two bank rows are grouped when their candidate ledger sets
+are disjoint. The LLM selects only from verified combinations; confidence and
 sum/direction bouncers apply. Incomplete searches are flagged for audit.
 
 `ai_match(config, result, tol=0.50, same_side=True, llm=None)` is the functional
-wrapper. `AIMatcher._check_connectivity()` returns `None` or an error string;
-`_require_llm()` returns the initialized client or raises `RuntimeError`.
+wrapper. `AIMatcher._initialize_llm()` returns `None` or a client construction
+error string; `_require_llm()` returns the initialized client or raises
+`RuntimeError`.
 
 ## AI utilities — `ai_matcher/ai_utils.py`
 
@@ -208,6 +213,8 @@ wrapper. `AIMatcher._check_connectivity()` returns `None` or an error string;
 - `_make_parser(schema)`: create the structured output parser used by prompts.
 - `_format_record_for_prompt(record, is_bank)`: render typed fields for model
   input without changing the source record.
+- `invoke_with_metrics(chain, payload, phase, details="")`: invoke Ollama and
+  log elapsed time plus approximate prompt/response character counts.
 - `_get_direction_amount(record)`: return the nonzero amount and its debit/
   credit direction according to record fields.
 - `_directions_compatible(gl_direction, bank_direction, same_side)`: apply the

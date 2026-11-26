@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from bisect import bisect_left, bisect_right
 from functools import lru_cache, partial
+from time import perf_counter
 from typing import Any, Callable, List, Optional, Tuple, Set, Dict
 
 from schema import BankStatement, LedgerFormat, IgnoredMetadataRecord, AuditInvestigationItem
@@ -1033,27 +1034,40 @@ class FuzzyMatcher(Matcher):
         
     
     # Standard fuzzy stages, excluding group relationship strategies.
+    def _run_timed(self, label: str, action: Callable[[], Any]) -> Any:
+        started = perf_counter()
+        print(
+            f"[fuzzy] {label} starting "
+            f"(ledger={len(self.ledger_pool)}, bank={len(self.bank_pool)})"
+        )
+        try:
+            return action()
+        finally:
+            print(f"[fuzzy] {label} finished in {perf_counter() - started:.3f}s")
+
     def run_standard_strategies(self) -> None:
-        self.cleanse_zero_amount_metadata()
-        self.flag_ghost_reversals()
-
-        self.match_deposit_in_transit()
-        self.match_outstanding_checks()
-        self.match_bank_service_charges()
-        self.match_text_similarity()
-        self.match_transposition_errors()
-        self.match_rounding_differences()
-        self.match_nsf_returned_items()
-        self.match_interest_income()
-        self.match_discounts_and_taxes()
-
-        self.match_bank_side_zero_sum()
-        self.match_ledger_side_zero_sum()
+        strategies = (
+            ("cleanse zero-amount metadata", self.cleanse_zero_amount_metadata),
+            ("flag ghost reversals", self.flag_ghost_reversals),
+            ("deposit in transit", self.match_deposit_in_transit),
+            ("outstanding checks", self.match_outstanding_checks),
+            ("bank service charges", self.match_bank_service_charges),
+            ("text similarity", self.match_text_similarity),
+            ("transposition errors", self.match_transposition_errors),
+            ("rounding differences", self.match_rounding_differences),
+            ("NSF / returned items", self.match_nsf_returned_items),
+            ("interest income", self.match_interest_income),
+            ("discounts and taxes", self.match_discounts_and_taxes),
+            ("bank-side zero-sum", self.match_bank_side_zero_sum),
+            ("ledger-side zero-sum", self.match_ledger_side_zero_sum),
+        )
+        for label, action in strategies:
+            self._run_timed(label, action)
 
     # Strategies 14-15 run after the one-to-many / many-to-one relationship pass.
     def run_specialized_residual_strategies(self) -> None:
-        self.match_split_charge()
-        self.match_base_fee_plus_tax()
+        self._run_timed("split charge", self.match_split_charge)
+        self._run_timed("base fee plus tax", self.match_base_fee_plus_tax)
 
     def to_result(self) -> dict:
         return {

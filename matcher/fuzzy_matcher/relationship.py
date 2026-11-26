@@ -3,6 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import date
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from schema import BankStatement, LedgerFormat
@@ -98,6 +99,7 @@ class Relationship(Matcher):
         self._legacy_matcher = legacy_matcher
         self._tol = float(self.tolerances.get("DEFAULT", 1.0))
         self._cal = self.calendar
+        self.subset_searches = {"one-to-many": 0, "many-to-one": 0}
         
         self._prepare_calendar()
         self.fuzzy_matches: List[Dict[str, Any]] = (
@@ -257,6 +259,8 @@ class Relationship(Matcher):
         self, 
         one_ledger: bool
     ) -> None:
+        pass_name = "one-to-many" if one_ledger else "many-to-one"
+        self.subset_searches[pass_name] = 0
         anchors = list(self.ledger_pool if one_ledger else self.bank_pool)
         members = list(self.bank_pool if one_ledger else self.ledger_pool)
         
@@ -286,6 +290,7 @@ class Relationship(Matcher):
                     if amount > 0:
                         eligible.append((member_index, amount))
                         
+                self.subset_searches[pass_name] += 1
                 subset = find_subsets(
                     [int(round(amount * 100)) for _, amount in eligible],
                     int(round(target * 100)),
@@ -474,7 +479,43 @@ class Relationship(Matcher):
             self._legacy_matcher.m2m_stats = self.m2m_stats
 
     def match(self) -> Dict[str, Any]:
-        self.match_one_to_many()
-        self.match_many_to_one()
-        return self.match_many_to_many()
+        for label, action in (
+            ("one-to-many", self.match_one_to_many),
+            ("many-to-one", self.match_many_to_one),
+        ):
+            started = perf_counter()
+            print(
+                f"[fuzzy] relationship {label} starting "
+                f"(ledger={len(self.ledger_pool)}, bank={len(self.bank_pool)})"
+            )
+            try:
+                action()
+            finally:
+                print(
+                    f"[fuzzy] relationship {label} finished in "
+                    f"{perf_counter() - started:.3f}s "
+                    f"(ledger={len(self.ledger_pool)}, bank={len(self.bank_pool)}, "
+                    f"subset_searches={self.subset_searches[label]})"
+                )
+
+        # Temporarily skip many-to-many matching to keep resource use bounded.
+        # Re-enable with `return self.match_many_to_many()` when capacity allows.
+        print(
+            f"[fuzzy] relationship many-to-many skipped "
+            f"(ledger={len(self.ledger_pool)}, bank={len(self.bank_pool)})"
+        )
+        stats = {
+            "m2m_components_skipped": 1,
+            "m2m_components_searched": 0,
+            "m2m_budget_exhaustions": 0,
+            "m2m_accepted_matches": 0,
+            "m2m_ledger_rows_consumed": 0,
+            "m2m_bank_rows_consumed": 0,
+            "m2m_proposed_candidates": 0,
+            "m2m_nodes": 0,
+        }
+        self.proposed_matches = []
+        self.m2m_stats = stats
+        self._sync_legacy()
+        return {"PROPOSED_MATCHES": [], "M2M_STATS": stats}
 

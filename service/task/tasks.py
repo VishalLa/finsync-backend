@@ -26,6 +26,7 @@ from app.shared.message import (
     T_SERVICE_SAVE,
     ServiceSaveMsg,
 )
+from app.shared.status import is_cancel_requested
 from app.shared.settings import get_settings
 from app.shared.status import set_status
 from app.shared.storage import read_json, resolve
@@ -165,6 +166,12 @@ def persist_inputs(self, payload: dict) -> dict[str, str]:
         reject_message(celery_app, payload, "inputs", exc, run_exists=False)
         raise
 
+    if is_cancel_requested(message.run_id):
+        return {
+            "status": "cancelled", 
+            "run_id": message.run_id
+        }
+
     set_status(message.run_id, "inputs", "running", user_id=message.user_id)
     inputs_persisted = False
     
@@ -235,6 +242,9 @@ def persist_results(self, payload: dict) -> dict[str, str]:
     except BadMessage as exc:
         reject_message(celery_app, payload, "results", exc)
         raise
+
+    if is_cancel_requested(message.run_id):
+        return {"status": "cancelled", "run_id": message.run_id}
 
     set_status(message.run_id, "results", "running", user_id=message.user_id)
     try:
@@ -352,6 +362,12 @@ def save_results(self, payload: dict) -> dict[str, str]:
     except BadMessage as exc:
         reject_message(celery_app, payload, "service", exc)
         raise
+
+    if is_cancel_requested(message.run_id):
+        return {
+            "status": "cancelled", 
+            "run_id": message.run_id
+        }
     
     set_status(message.run_id, "service", "running", user_id=message.user_id)
     

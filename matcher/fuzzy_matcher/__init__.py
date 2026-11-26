@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 from schema import BankStatement, LedgerFormat
@@ -24,7 +25,9 @@ def run_fuzzy_matcher(
         tolerances=tolerances,
         calendar=calendar,
     )
+    fuzzy_started = perf_counter()
     fuzzy_result = fuzzy.match()
+    print(f"[fuzzy] standard strategies finished in {perf_counter() - fuzzy_started:.3f}s")
 
     relationships = Relationship(
         pending_ledger=fuzzy_result["UNRECONCILED_ITEMS"]["ledger"],
@@ -33,7 +36,12 @@ def run_fuzzy_matcher(
         tolerances=tolerances,
         calendar=calendar,
     )
+    relationships_started = perf_counter()
     relationships.match()
+    print(
+        f"[fuzzy] relationship strategies finished in "
+        f"{perf_counter() - relationships_started:.3f}s"
+    )
 
     fuzzy.fuzzy_matches.extend(relationships.fuzzy_matches)
     fuzzy.proposed_matches = relationships.proposed_matches

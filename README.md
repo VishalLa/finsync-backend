@@ -91,7 +91,7 @@ EMAIL_VERIFICATION_URL=http://localhost:8000/auth/verify-email
 # Optional
 CORS_ALLOWED_ORIGINS=*
 OLLAMA_URL=http://127.0.0.1:11434
-OLLAMA_NAME=phi3:latest
+OLLAMA_NAME=gemma3:4b
 STORAGE_DIR=storage
 POOL_WORKERS=1
 ```
@@ -164,7 +164,7 @@ The Flask development server listens on `http://localhost:8000`.
 To enable the optional AI matching stage locally:
 
 ```bash
-ollama pull phi3:latest
+ollama pull gemma3:4b
 ollama serve
 ```
 
@@ -181,7 +181,7 @@ Compose builds separate API, entry, matcher, and service images. Only the servic
 Pull the model once the Ollama container is healthy:
 
 ```bash
-docker compose -f docker-compose.microservices.yml exec ollama ollama pull phi3:latest
+docker compose -f docker-compose.microservices.yml exec ollama ollama pull gemma3:4b
 ```
 
 ## API overview

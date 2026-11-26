@@ -42,4 +42,40 @@ def get_status(run_id: str) -> dict:
         return read_json(run_ref(run_id, "status.json"))
     except FileNotFoundError:
         return {"run_id": run_id, "stages": {}}
+
+
+def request_cancel(run_id: str, user_id: str) -> None:
+    """Persist a cooperative cancellation signal for every stage of a run."""
+    status_ref = run_ref(run_id, "status.json")
+    try:
+        data = read_json(status_ref)
+    except FileNotFoundError:
+        data = {
+            "run_id": run_id, 
+            "stages": {}
+        }
+        
+    owner = data.get("user_id")
+    if owner is not None and owner != user_id:
+        raise ValueError(f"run {run_id!r} belongs to a different user")
+    
+    data["user_id"] = user_id
+    data["cancel_requested"] = True
+    write_json(status_ref, data)
+    # Keep the cancellation tombstone outside the run folder. The run folder
+    # is deleted immediately after the stop signal is sent, while queued tasks
+    # may not be visible to Celery's worker inspection yet.
+    write_json(
+        f"cancelled-runs/{run_id}.json",
+        {"run_id": run_id, "user_id": user_id},
+    )
+    run_quota.release(user_id, run_id)
+
+
+def is_cancel_requested(run_id: str) -> bool:
+    try:
+        read_json(f"cancelled-runs/{run_id}.json")
+        return True
+    except FileNotFoundError:
+        return bool(get_status(run_id).get("cancel_requested"))
     

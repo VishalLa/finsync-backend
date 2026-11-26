@@ -4,6 +4,7 @@ import re
 import json
 import logging
 from datetime import  datetime
+from time import perf_counter
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 from pydantic import BaseModel
@@ -30,6 +31,7 @@ def _prepare_llm(config: Settings) -> ChatOllama:
             model=config.OLLAMA_NAME,
             temperature=0.0,
             num_ctx=8192,
+            num_predict=768,
             repeat_penalty=1.1,
             base_url=config.OLLAMA_URL
         )
@@ -46,6 +48,27 @@ def get_shared_llm(config: Settings) -> ChatOllama:
 def reset_shared_llm() -> None:
     global _SHARED_LLM
     _SHARED_LLM = None
+
+
+def invoke_with_metrics(chain: Any, payload: Dict[str, Any], *, phase: str, details: str = "") -> Any:
+    """Invoke one LLM request and log its duration and approximate payload size."""
+    prompt_chars = sum(len(str(value)) for value in payload.values())
+    started = perf_counter()
+    try:
+        result = chain.invoke(payload)
+    except Exception as exc:
+        print(
+            f"[ai] phase={phase} failed after {perf_counter() - started:.3f}s "
+            f"prompt_chars={prompt_chars} error={type(exc).__name__} {details}"
+        )
+        raise
+
+    content = result.content if hasattr(result, "content") else str(result)
+    print(
+        f"[ai] phase={phase} finished in {perf_counter() - started:.3f}s "
+        f"prompt_chars={prompt_chars} response_chars={len(str(content))} {details}"
+    )
+    return result
 
 
 # JSON parsing (LLM output is not always clean JSON)

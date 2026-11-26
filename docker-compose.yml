@@ -102,12 +102,12 @@ services:
         condition: service_completed_successfully
       redis_server:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+    # healthcheck:
+    #   test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+    #   interval: 15s
+    #   timeout: 5s
+    #   retries: 5
+    #   start_period: 20s
 
   entry_worker:
     <<: *worker
@@ -162,7 +162,7 @@ services:
       REDIS_URL: ${REDIS_URL}
       STORAGE_DIR: /data/uploads
       OLLAMA_URL: http://ollama:11434
-      OLLAMA_NAME: ${OLLAMA_NAME:-phi3:latest}
+      OLLAMA_NAME: ${OLLAMA_NAME:-gemma3:4b}
     volumes: [bill_uploads:/data/uploads]
     healthcheck:
       test: ["CMD-SHELL", "celery -A matcher.celery_app:celery_app inspect ping -d \"matcher@$$HOSTNAME\" -t 10 | grep -q pong"]

@@ -53,7 +53,7 @@ if [[ -z "${OLLAMA_NAME+x}" ]]; then
         fi
     done
 fi
-OLLAMA_NAME="${OLLAMA_NAME:-phi3:latest}"
+OLLAMA_NAME="${OLLAMA_NAME:-gemma3:4b}"
 
 if [[ -f "/.dockerenv" ]]; then
     RUNTIME_REDIS_URL="${REDIS_URL:-redis://redis_server:6379/0}"

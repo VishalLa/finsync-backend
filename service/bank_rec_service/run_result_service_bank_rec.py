@@ -697,6 +697,7 @@ class ResultBankRec:
         self,
         user_id: str,
         run_id: str,
+        allow_processing: bool = False,
     ) -> Optional[Dict[str, Any]]:
         if not user_id:
             return None
@@ -712,7 +713,10 @@ class ResultBankRec:
             if run is None:
                 return None
 
-            if (run.status or "").lower() in {"processing", "started", "pending"}:
+            if (
+                not allow_processing
+                and (run.status or "").lower() in {"processing", "started", "pending"}
+            ):
                 return {"deleted": False, "reason": "processing"}
 
             public_id = ResultBankRec._public_run_id(run)

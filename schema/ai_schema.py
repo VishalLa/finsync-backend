@@ -10,7 +10,7 @@ class AI1to1Match(SchemaBase):
     ledger_id:  str   = Field(..., description="Unique Ledger ID")
     bank_id:    int   = Field(..., description="Bank Statement Row Index")
     confidence: float = Field(..., ge=0.0, le=1.0, description="0.0 to 1.0")
-    reasoning:  str   = Field(..., description="Concise semantic/date/amount match explanation")
+    reasoning:  str   = Field("", description="Optional concise explanation")
 
 
 class AIWindowOutput(SchemaBase):
@@ -25,7 +25,7 @@ class AIManyToOneMatch(SchemaBase):
     bank_id:    int                     = Field(..., description="Single matched bank row index")
     ledger_ids: List[AILedgerCandidate] = Field(..., description="Ledger entries summing to bank amount")
     confidence: float                   = Field(..., ge=0.0, le=1.0)
-    reasoning:  str
+    reasoning:  str = ""
 
 
 class AIManyToOneOutput(SchemaBase):

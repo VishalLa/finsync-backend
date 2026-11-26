@@ -13,7 +13,7 @@ from app.shared.message import (
     T_DB_STORE_INPUTS,
     T_ENTRY_PROCESS,
 )
-from app.shared.status import set_status
+from app.shared.status import is_cancel_requested, set_status
 from app.shared.storage import resolve, run_ref, write_json
 
 from .celery_app import celery_app
@@ -34,6 +34,12 @@ def process_run(self, payload: Dict[str, Any]) -> Dict[str, str]:
     except BadMessage as exc:
         reject_message(celery_app, payload, "entry", exc, run_exists=False)
         raise
+
+    if is_cancel_requested(message.run_id):
+        return {
+            "status": "cancelled", 
+            "run_id": message.run_id
+            }
 
     set_status(
         run_id=message.run_id,
@@ -86,6 +92,12 @@ def extract_ledger(
     date_format: str,
 ) -> Dict[str, Any]:
     try:
+        if is_cancel_requested(run_id):
+            return {
+                "kind": "ledger", 
+                "cancelled": True
+            }
+        
         ledger_data = load_ledger(
             filepath=str(resolve(ledger_ref)),
             date_format=date_format,
@@ -124,6 +136,12 @@ def extract_bank(
     bank_name: str | None = None,
 ) -> Dict[str, Any]:
     try:
+        if is_cancel_requested(run_id):
+            return {
+                "kind": "bank", 
+                "cancelled": True
+            }
+        
         bank_data = load_bank_statement(filepath=str(resolve(bank_ref)))
         if bank_name:
             bank_data["bank_name"] = bank_name
@@ -168,6 +186,12 @@ def persist_extracted_inputs(
         reject_message(celery_app, payload, "entry", exc, run_exists=False)
         raise
 
+    if is_cancel_requested(message.run_id):
+        return {
+            "status": "cancelled", 
+            "run_id": message.run_id
+        }
+
     try:
         results_by_kind = {result["kind"]: result for result in extraction_results}
         if (
@@ -175,6 +199,12 @@ def persist_extracted_inputs(
             or set(results_by_kind) != {"bank", "ledger"}
         ):
             raise ValueError("Both bank and ledger extraction results are required.")
+        
+        if is_cancel_requested(message.run_id):
+            return {
+                "status": "cancelled", 
+                "run_id": message.run_id
+            }
 
         ledger_result = results_by_kind["ledger"]
         bank_result = results_by_kind["bank"]

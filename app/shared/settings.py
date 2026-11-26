@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     REDIS_URL: str
     STORAGE_DIR: str = Field(default_factory=_default_storage_dir)
 
-    OLLAMA_NAME: str = "phi3:latest"
+    OLLAMA_NAME: str = "gemma3:4b"
     OLLAMA_URL: str = Field(default_factory=_default_ollama_url)
 
     Q_ENTRY: str = "entry_point.queue"

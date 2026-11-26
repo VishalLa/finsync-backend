@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import itertools
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -217,7 +218,17 @@ class ResidualReconciler(Matcher):
         default_tol: float = 1.0,
     ) -> Dict[str, List[Dict[str, Any]]]:
         bank_out = []
-        for b in self.bank_pool:
+        bank_started = perf_counter()
+        print(
+            f"[residual] phase=classify_bank started rows={len(self.bank_pool)} "
+            f"counterpart_rows={len(self.ledger_pool)}"
+        )
+        for index, b in enumerate(self.bank_pool, start=1):
+            if index == 1 or index % 500 == 0:
+                print(
+                    f"[residual] phase=classify_bank progress={index}/{len(self.bank_pool)} "
+                    f"elapsed={perf_counter() - bank_started:.3f}s"
+                )
             c = self._classify_one(
                 item=b, 
                 is_bank=True, 
@@ -225,9 +236,23 @@ class ResidualReconciler(Matcher):
                 default_tol=default_tol
             )
             bank_out.append({"item": b, **c})
+        print(
+            f"[residual] phase=classify_bank finished in "
+            f"{perf_counter() - bank_started:.3f}s rows={len(bank_out)}"
+        )
 
         ledger_out = []
-        for gl in self.ledger_pool:
+        ledger_started = perf_counter()
+        print(
+            f"[residual] phase=classify_ledger started rows={len(self.ledger_pool)} "
+            f"counterpart_rows={len(self.bank_pool)}"
+        )
+        for index, gl in enumerate(self.ledger_pool, start=1):
+            if index == 1 or index % 500 == 0:
+                print(
+                    f"[residual] phase=classify_ledger progress={index}/{len(self.ledger_pool)} "
+                    f"elapsed={perf_counter() - ledger_started:.3f}s"
+                )
             c = self._classify_one(
                 item=gl, 
                 is_bank=False, 
@@ -235,6 +260,10 @@ class ResidualReconciler(Matcher):
                 default_tol=default_tol
             )
             ledger_out.append({"item": gl, **c})
+        print(
+            f"[residual] phase=classify_ledger finished in "
+            f"{perf_counter() - ledger_started:.3f}s rows={len(ledger_out)}"
+        )
 
         return {
             "bank": bank_out, 
@@ -248,11 +277,22 @@ class ResidualReconciler(Matcher):
         timing_ledger: List[Dict[str, Any]],
         tol: float = 1.0,
     ) -> Tuple[List[dict], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        started = perf_counter()
+        print(
+            f"[residual] phase=timing_resolution started "
+            f"ledger_candidates={len(timing_ledger)} bank_candidates={len(timing_bank)}"
+        )
         bank_pool = list(timing_bank)
         ledger_pool = list(timing_ledger)
         matches: List[dict] = []
 
-        for gl_entry in list(ledger_pool):
+        ledger_candidates = list(ledger_pool)
+        for index, gl_entry in enumerate(ledger_candidates, start=1):
+            if index == 1 or index % 500 == 0:
+                print(
+                    f"[residual] phase=timing_resolution progress={index}/{len(ledger_candidates)} "
+                    f"elapsed={perf_counter() - started:.3f}s"
+                )
             gl = gl_entry["item"]
             gl_amt, gl_dir = _get_direction_amount(gl)
             gl_date = _safe_str(gl, "transaction_date")
@@ -311,6 +351,11 @@ class ResidualReconciler(Matcher):
             ResidualReconciler._identity_remove(ledger_pool, gl_entry)
             ResidualReconciler._identity_remove(bank_pool, bank_entry)
 
+        print(
+            f"[residual] phase=timing_resolution finished in "
+            f"{perf_counter() - started:.3f}s matches={len(matches)} "
+            f"ledger_left={len(ledger_pool)} bank_left={len(bank_pool)}"
+        )
         return matches, ledger_pool, bank_pool
 
     @staticmethod
@@ -369,6 +414,7 @@ class ResidualReconciler(Matcher):
         ledger_candidate_pool: List[Dict[str, Any]],
         bank_candidate_pool: List[Dict[str, Any]],
     ) -> Tuple[List[dict], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        started = perf_counter()
         bank_pool = list(bank_candidate_pool)
         ledger_pool = list(ledger_candidate_pool)
         bank_targets = [e for e in split_bank_targets if ResidualReconciler._identity_contains(bank_pool, e)]
@@ -390,7 +436,16 @@ class ResidualReconciler(Matcher):
                 pairs = [(e, a) for e, a in pairs if a <= target]
             return pairs
 
-        for bank_entry in list(bank_targets):
+        print(
+            f"[residual] phase=split_bank started targets={len(bank_targets)} "
+            f"candidate_rows={len(ledger_pool)}"
+        )
+        for index, bank_entry in enumerate(list(bank_targets), start=1):
+            if index == 1 or index % 100 == 0:
+                print(
+                    f"[residual] phase=split_bank progress={index}/{len(bank_targets)} "
+                    f"elapsed={perf_counter() - started:.3f}s matches={len(matches)}"
+                )
             if not ResidualReconciler._identity_contains(bank_pool, bank_entry):
                 continue
 
@@ -442,7 +497,21 @@ class ResidualReconciler(Matcher):
             for e in gl_entries:
                 ResidualReconciler._identity_remove(ledger_pool, e)
 
-        for gl_entry in list(ledger_targets):
+        print(
+            f"[residual] phase=split_bank finished in "
+            f"{perf_counter() - started:.3f}s matches={len(matches)}"
+        )
+        ledger_started = perf_counter()
+        print(
+            f"[residual] phase=split_ledger started targets={len(ledger_targets)} "
+            f"candidate_rows={len(bank_pool)}"
+        )
+        for index, gl_entry in enumerate(list(ledger_targets), start=1):
+            if index == 1 or index % 100 == 0:
+                print(
+                    f"[residual] phase=split_ledger progress={index}/{len(ledger_targets)} "
+                    f"elapsed={perf_counter() - ledger_started:.3f}s matches={len(matches)}"
+                )
             if not ResidualReconciler._identity_contains(ledger_pool, gl_entry):
                 continue
 
@@ -497,6 +566,10 @@ class ResidualReconciler(Matcher):
             for e in bank_entries:
                 ResidualReconciler._identity_remove(bank_pool, e)
 
+        print(
+            f"[residual] phase=split_ledger finished in "
+            f"{perf_counter() - ledger_started:.3f}s matches={len(matches)}"
+        )
         return matches, ledger_pool, bank_pool
 
 
@@ -682,8 +755,16 @@ class ResidualReconciler(Matcher):
         entries: List[Dict[str, Any]],
         is_bank: bool,
     ) -> List[dict]:
+        side = "bank" if is_bank else "ledger"
+        started = perf_counter()
+        print(f"[residual] phase=review_queue_{side} started rows={len(entries)}")
         queue = []
-        for entry in entries:
+        for index, entry in enumerate(entries, start=1):
+            if index == 1 or index % 250 == 0:
+                print(
+                    f"[residual] phase=review_queue_{side} progress={index}/{len(entries)} "
+                    f"elapsed={perf_counter() - started:.3f}s"
+                )
             item = entry["item"]
             label = entry["label"]
             evidence = entry.get("evidence", {})
@@ -697,10 +778,18 @@ class ResidualReconciler(Matcher):
                 "closest_candidates": self._closest_context(item, is_bank),
                 "suggested_action": ResidualReconciler._suggested_action(label, evidence),
             })
+        print(
+            f"[residual] phase=review_queue_{side} finished in "
+            f"{perf_counter() - started:.3f}s rows={len(queue)}"
+        )
         return queue
 
     def match(self) -> dict:
-
+        started = perf_counter()
+        print(
+            f"[residual] match started ledger={len(self.ledger_pool)} "
+            f"bank={len(self.bank_pool)}"
+        )
         classified = self.classify_residuals()
 
         timing_bank = [e for e in classified["bank"] if e["label"] == ResidualReconciler.CLASSIFY_TIMING]
@@ -728,16 +817,29 @@ class ResidualReconciler(Matcher):
         non_missing_bank_remaining = [e for e in split_bank_left if e["label"] != ResidualReconciler.CLASSIFY_MISSING]
         non_missing_ledger_remaining = split_ledger_left
 
+        draft_started = perf_counter()
+        print(f"[residual] phase=journal_drafting started rows={len(missing_bank_remaining)}")
         drafts, missing_bank_unresolved, ai_skipped, ai_skip_reason = self._generate_journal_drafts(
             missing_bank_remaining,
+        )
+        print(
+            f"[residual] phase=journal_drafting finished in "
+            f"{perf_counter() - draft_started:.3f}s drafts={len(drafts)} "
+            f"unresolved={len(missing_bank_unresolved)} ai_skipped={ai_skipped}"
         )
 
         review_bank = non_missing_bank_remaining + missing_bank_unresolved
         review_ledger = non_missing_ledger_remaining
 
+        review_started = perf_counter()
         human_review_queue = (
             self._build_review_queue(review_bank, True) +
             self._build_review_queue(review_ledger, False)
+        )
+        print(
+            f"[residual] phase=review_queue finished in "
+            f"{perf_counter() - review_started:.3f}s "
+            f"bank_rows={len(review_bank)} ledger_rows={len(review_ledger)}"
         )
 
         stats = {
@@ -750,6 +852,11 @@ class ResidualReconciler(Matcher):
             "ai_skipped": ai_skipped,
             "ai_skip_reason": ai_skip_reason,
         }
+        print(
+            f"[residual] match finished in {perf_counter() - started:.3f}s "
+            f"timing_matches={len(timing_matches)} split_matches={len(split_matches)} "
+            f"drafts={len(drafts)} unresolved={len(human_review_queue)}"
+        )
 
         return {
             "timing_matches": timing_matches,
